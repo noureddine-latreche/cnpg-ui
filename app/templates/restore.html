@@ -1,0 +1,1301 @@
+{% extends "base.html" %}
+
+{% block title %}Restore — CNPG UI{% endblock %}
+{% block header_title %}Point-in-Time Restore{% endblock %}
+
+{% block content %}
+<div x-data="restorePage()" x-init="init()" class="space-y-8">
+
+  {% if error_msg %}
+  <div class="flex items-start gap-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <span>{{ error_msg }}</span>
+  </div>
+  {% endif %}
+
+  <div>
+    <h1 class="text-xl font-bold text-slate-900">Point-in-Time Recovery</h1>
+    <p class="text-sm text-slate-500 mt-0.5">Restore a CNPG cluster to any recoverable point in time from S3 WAL archive.</p>
+  </div>
+
+  <!-- Step 1: Source -->
+  <div class="card space-y-5">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-brand-600 rounded-full flex items-center justify-center flex-shrink-0">
+        <span class="text-white text-xs font-bold">1</span>
+      </div>
+      <h2 class="text-base font-semibold text-slate-900">Backup Source</h2>
+    </div>
+
+    <div class="grid grid-cols-3 gap-4">
+      <div>
+        <label class="label">Source Cluster</label>
+        <select x-model="form.sourceCluster" @change="rangeResult = null; validation = null" class="input">
+          {% for c in clusters %}
+          <option value="{{ c }}"{% if c == default_cluster %} selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+          <option value="">-- custom --</option>
+        </select>
+        <input x-show="form.sourceCluster === ''" type="text" x-model="form.customCluster"
+          @input="rangeResult = null; validation = null" class="input mt-2" placeholder="custom cluster name" />
+      </div>
+      <div>
+        <label class="label">S3 Bucket</label>
+        <input type="text" x-model="form.bucket" @input="rangeResult = null; validation = null"
+          class="input" placeholder="my-backup-bucket" />
+      </div>
+      <div>
+        <label class="label">Environment / S3 Prefix</label>
+        <input type="text" x-model="form.env" @input="rangeResult = null; validation = null"
+          class="input" placeholder="prod" />
+      </div>
+    </div>
+
+    <button @click="checkRange()" :disabled="rangeLoading" class="btn-primary">
+      <svg x-show="!rangeLoading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+      </svg>
+      <svg x-show="rangeLoading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+      Scan S3
+    </button>
+
+    <div x-show="rangeError" x-cloak
+      class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3" x-text="rangeError">
+    </div>
+
+    <!-- Results: backups + timeline health -->
+    <template x-if="rangeResult">
+      <div class="space-y-4">
+
+        <!-- Timeline health -->
+        <div class="space-y-2">
+          <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Timeline Health</p>
+          <div class="flex flex-wrap gap-2">
+            <template x-for="[tl, cov] in Object.entries(rangeResult.wal_coverage)" :key="tl">
+              <div class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <div :class="timelineHealthColor(parseInt(tl))" class="w-2 h-2 rounded-full flex-shrink-0"></div>
+                <span class="text-xs font-mono text-slate-700">Timeline <span x-text="tl"></span></span>
+                <span class="text-xs text-slate-500" x-text="cov.segment_count + ' WAL segments'"></span>
+                <template x-if="parseInt(tl) > 1 && !rangeResult.history_timelines.includes(parseInt(tl))">
+                  <span class="badge badge-yellow !text-xs !py-0">history missing</span>
+                </template>
+                <template x-if="parseInt(tl) > 1 && rangeResult.history_timelines.includes(parseInt(tl))">
+                  <span class="badge badge-green !text-xs !py-0">history ✓</span>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Missing history file remediation -->
+        <template x-if="missingHistoryTimelines().length > 0">
+          <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+            <div class="flex items-start gap-2">
+              <svg class="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-semibold text-amber-900">
+                  Timeline history file missing — cross-timeline recovery is blocked
+                </p>
+                <p class="text-xs text-amber-800 mt-0.5">
+                  Without <template x-for="tl in missingHistoryTimelines()" :key="tl"><span class="font-mono" x-text="historyFilename(tl) + ' '"></span></template>
+                  you can only recover within the <em>same</em> timeline as the base backup.
+                  Recovery that spans a timeline boundary will crash.
+                </p>
+              </div>
+            </div>
+            <template x-for="tl in missingHistoryTimelines()" :key="tl">
+              <div class="space-y-1.5">
+                <p class="text-xs font-semibold text-amber-900">
+                  To fix — run these three commands (replace pod/namespace as needed):
+                </p>
+                <div class="space-y-1">
+                  <div class="bg-amber-900/10 rounded-lg px-3 py-2 font-mono text-xs text-amber-900 whitespace-pre-wrap break-all"
+                    x-text="historyFixStep1(tl)"></div>
+                  <div class="bg-amber-900/10 rounded-lg px-3 py-2 font-mono text-xs text-amber-900 whitespace-pre-wrap break-all"
+                    x-text="historyFixStep2(tl)"></div>
+                  <div class="bg-amber-900/10 rounded-lg px-3 py-2 font-mono text-xs text-amber-900 whitespace-pre-wrap break-all"
+                    x-text="historyFixStep3(tl)"></div>
+                </div>
+                <p class="text-xs text-amber-700">
+                  Then click <strong>Scan S3</strong> again to refresh.
+                </p>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- Base backups table -->
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Available Base Backups</p>
+          <div class="overflow-x-auto rounded-xl border border-slate-200">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th class="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Backup</th>
+                  <th class="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Created (UTC)</th>
+                  <th class="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Timeline</th>
+                  <th class="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Recoverable range</th>
+                  <th class="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                <template x-for="b in rangeResult.backups" :key="b.name">
+                  <tr class="hover:bg-slate-50">
+                    <td class="px-4 py-3 font-mono text-xs text-slate-700" x-text="b.name"></td>
+                    <td class="px-4 py-3 text-xs text-slate-700" x-text="fmtTs(b.end_time)"></td>
+                    <td class="px-4 py-3">
+                      <span class="badge badge-blue !text-xs" x-text="'TL ' + b.timeline"></span>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-slate-600" x-html="backupRecoverableRange(b)"></td>
+                    <td class="px-4 py-3">
+                      <span :class="b.status === 'DONE' ? 'badge-green' : 'badge-red'" class="badge !text-xs"
+                        x-text="b.status"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </template>
+  </div>
+
+  <!-- Step 2: Target time + validation -->
+  <div class="card space-y-5" x-show="rangeResult" x-cloak>
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-brand-600 rounded-full flex items-center justify-center flex-shrink-0">
+        <span class="text-white text-xs font-bold">2</span>
+      </div>
+      <h2 class="text-base font-semibold text-slate-900">Recovery Target Time (UTC)</h2>
+    </div>
+
+    <div class="max-w-sm">
+      <label class="label">Target Date & Time</label>
+      <input type="datetime-local" x-model="form.targetTime" @change="validateTarget()" class="input" />
+      <p class="mt-1.5 text-xs text-slate-500">All times are UTC. Select within an available recovery window.</p>
+    </div>
+
+    <!-- Validation result -->
+    <template x-if="validation && form.targetTime">
+      <div>
+        <!-- Feasible -->
+        <template x-if="validation.feasible">
+          <div class="space-y-3">
+            <div class="flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3">
+              <svg class="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="text-sm text-emerald-800">
+                <p class="font-semibold">Recovery is feasible</p>
+                <p class="text-xs mt-0.5">
+                  Base backup: <span class="font-mono" x-text="validation.backup"></span>
+                  (TL <span x-text="validation.backupTimeline"></span>)
+                  <span x-show="validation.requiresWalReplay"> · WAL replay required</span>
+                  <span x-show="!validation.requiresWalReplay"> · No WAL replay (exact backup time)</span>
+                </p>
+                <template x-if="validation.warning">
+                  <p class="text-xs text-amber-700 mt-1 font-medium" x-text="validation.warning"></p>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Not feasible -->
+        <template x-if="!validation.feasible">
+          <div class="space-y-3">
+            <div class="flex items-start gap-3 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+              <svg class="w-4 h-4 text-rose-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <div class="text-sm text-rose-800">
+                <p class="font-semibold">Recovery not possible at this time</p>
+                <p class="text-xs mt-0.5" x-text="validation.error"></p>
+              </div>
+            </div>
+
+            <!-- History file blocker -->
+            <template x-if="validation.remediation === 'history_file'">
+              <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                <p class="text-xs font-semibold text-slate-700">What to do</p>
+                <p class="text-xs text-slate-600">
+                  You need to recover to either:
+                </p>
+                <ul class="text-xs text-slate-600 space-y-1 ml-3 list-disc">
+                  <li>
+                    A time within <strong>timeline <span x-text="validation.backupTimeline"></span></strong> only
+                    — the WAL coverage ends at approximately
+                    <span class="font-mono" x-text="fmtTs(walLastModified(validation.backupTimeline))"></span>
+                  </li>
+                  <li>
+                    A time after the <strong>most recent base backup on the latest timeline</strong>
+                    — earliest: <span class="font-mono"
+                      x-text="fmtTs(latestTimelineBackupEndTime())"></span>
+                    (no cross-timeline WAL replay needed)
+                  </li>
+                  <li>
+                    Or upload the missing history file to S3 — see the fix instructions in Step 1 above
+                  </li>
+                </ul>
+              </div>
+            </template>
+
+            <!-- WAL gap -->
+            <template x-if="validation.remediation === 'wal_gap'">
+              <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                <p class="text-xs font-semibold text-slate-700">What you can recover to instead</p>
+                <ul class="text-xs text-slate-600 space-y-1.5 ml-3 list-disc">
+                  <li>
+                    <strong>Timeline <span x-text="validation.backupTimeline"></span> only</strong> —
+                    up to approximately
+                    <span class="font-mono" x-text="fmtTs(walLastModified(validation.backupTimeline))"></span>
+                    (use a TL<span x-text="validation.backupTimeline"></span> base backup)
+                  </li>
+                  <li>
+                    <strong>After the latest-timeline base backup</strong> —
+                    earliest:
+                    <span class="font-mono" x-text="fmtTs(validation.latestTlBackup)"></span>
+                    (no cross-timeline WAL replay needed)
+                  </li>
+                </ul>
+                <p class="text-xs text-slate-500 pt-1 border-t border-slate-200">
+                  The gap in between cannot be recovered — those WAL segments were never archived when the cluster
+                  first switched timelines.
+                </p>
+              </div>
+            </template>
+
+            <!-- No backup available -->
+            <template x-if="validation.remediation === 'no_backup'">
+              <div class="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                <p class="text-xs text-slate-600">
+                  The earliest available base backup starts at
+                  <span class="font-mono" x-text="fmtTs(rangeResult.backups[0] && rangeResult.backups[0].end_time)"></span>.
+                  Select a time at or after this point.
+                </p>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <!-- Step 3: Confirm + start -->
+  <div class="card space-y-5" x-show="rangeResult && validation && validation.feasible && form.targetTime" x-cloak>
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-brand-600 rounded-full flex items-center justify-center flex-shrink-0">
+        <span class="text-white text-xs font-bold">3</span>
+      </div>
+      <h2 class="text-base font-semibold text-slate-900">Confirm &amp; Start</h2>
+    </div>
+
+    <div>
+      <label class="label">S3 Destination Path</label>
+      <input type="text" x-model="form.destinationPath" class="input"
+        :placeholder="'s3://' + (form.bucket || 'your-bucket') + '/' + (form.env || 'env') + '/cnpg'" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        Stop before the cluster name — barman appends <span class="font-mono">/&lt;cluster&gt;/</span> via
+        <code class="font-mono">serverName</code>. Example: <span class="font-mono">s3://bucket/env/cnpg</span>
+      </p>
+    </div>
+
+    <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1.5 text-sm">
+      <p class="text-slate-600">
+        <span class="text-slate-500">Source cluster:</span>
+        <span class="font-mono text-slate-900 ml-2" x-text="effectiveCluster()"></span>
+      </p>
+      <p class="text-slate-600">
+        <span class="text-slate-500">Target time (UTC):</span>
+        <span class="font-mono text-slate-900 ml-2" x-text="form.targetTime ? form.targetTime.replace('T', ' ') + ' UTC' : '—'"></span>
+      </p>
+      <p class="text-slate-600">
+        <span class="text-slate-500">Destination path:</span>
+        <span class="font-mono text-slate-900 ml-2" x-text="form.destinationPath || '—'"></span>
+      </p>
+      <p class="text-xs text-slate-500 mt-2 pt-2 border-t border-slate-200">
+        Creates <span class="font-mono">postgres-restore</span> — 100 Gi + 20 Gi WAL PVCs on hcloud-volumes.
+      </p>
+    </div>
+
+    <div x-show="restoreError" x-cloak
+      class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3" x-text="restoreError">
+    </div>
+    <div x-show="restoreSuccess" x-cloak
+      class="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+      Restore cluster <span class="font-mono">postgres-restore</span> created. Recovery may take several minutes.
+    </div>
+
+    <button @click="startRestore()"
+      :disabled="restoreLoading || !form.targetTime || !form.destinationPath"
+      class="btn-primary">
+      <svg x-show="!restoreLoading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+      </svg>
+      <svg x-show="restoreLoading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+      Start Restore
+    </button>
+  </div>
+
+  <!-- Step 4: Promote to Primary -->
+  <div x-show="restoreCluster.exists && isRestoreHealthy()" x-cloak
+    x-data="promotePage()" x-init="init()"
+    class="card space-y-6 border-brand-200">
+
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-brand-600 rounded-full flex items-center justify-center flex-shrink-0">
+        <span class="text-white text-xs font-bold">4</span>
+      </div>
+      <div>
+        <h2 class="text-base font-semibold text-slate-900">Promote to Primary</h2>
+        <p class="text-xs text-slate-500 mt-0.5">
+          Replace the live cluster with
+          <span class="font-mono" x-text="status?.restore_cluster?.name || 'postgres-restore'"></span>
+          — non-destructively, with full rollback available until the final cleanup step.
+        </p>
+      </div>
+    </div>
+
+    <div x-show="promoteError" x-cloak
+      class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3" x-text="promoteError">
+    </div>
+
+    <!-- Status summary row -->
+    <div class="grid grid-cols-2 gap-3 text-sm" x-show="status">
+      <div class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 space-y-1">
+        <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Original cluster</p>
+        <p class="font-mono text-slate-900 text-xs" x-text="status && status.original_cluster ? status.original_cluster.name : '—'"></p>
+        <div class="flex items-center gap-2 mt-1">
+          <template x-if="status && status.original_cluster && status.original_cluster.exists">
+            <span :class="status.original_cluster.hibernated ? 'badge-slate' : 'badge-green'" class="badge !text-xs"
+              x-text="status.original_cluster.hibernated ? 'Hibernated' : status.original_cluster.phase">
+            </span>
+          </template>
+          <template x-if="status && status.original_cluster && !status.original_cluster.exists">
+            <span class="badge badge-slate !text-xs">Deleted</span>
+          </template>
+        </div>
+      </div>
+      <div class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 space-y-1">
+        <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Service traffic</p>
+        <p class="font-mono text-slate-900 text-xs" x-text="status ? status.service_name : '—'"></p>
+        <div class="flex items-center gap-2 mt-1">
+          <template x-if="status && status.service">
+            <span :class="serviceOnRestore() ? 'badge-green' : 'badge-blue'" class="badge !text-xs">
+              → <span x-text="status.service.cluster_selector || '?'"></span>
+            </span>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Steps A–D: hidden once finalize mode starts -->
+    <div x-show="!stepEVisible()">
+
+    <!-- Step A: Hibernate original -->
+    <div class="space-y-2">
+      <div class="flex items-center gap-3">
+        <div :class="stepADone() ? 'bg-emerald-500' : 'bg-slate-300'"
+          class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 transition-colors">
+          <svg x-show="stepADone()" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+          </svg>
+          <span x-show="!stepADone()" class="text-white text-xs font-bold">A</span>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-slate-900">Hibernate original cluster</p>
+          <p class="text-xs text-slate-500">
+            Stops all pods, keeps PVCs and Cluster CRD intact. Fully reversible.
+          </p>
+        </div>
+        <template x-if="!stepADone() && status && status.original_cluster && status.original_cluster.exists">
+          <button @click="hibernate()" :disabled="loadingA" class="btn-ghost !px-3 !py-1.5 text-xs">
+            <svg x-show="loadingA" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Hibernate
+          </button>
+        </template>
+        <template x-if="stepADone()">
+          <button @click="unhibernate()" :disabled="loadingA" class="btn-ghost !px-3 !py-1.5 text-xs text-slate-500">
+            ↩ Undo
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Step B: Switch service -->
+    <div class="space-y-2" :class="!stepADone() ? 'opacity-40 pointer-events-none' : ''">
+      <div class="flex items-center gap-3">
+        <div :class="stepBDone() ? 'bg-emerald-500' : 'bg-slate-300'"
+          class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 transition-colors">
+          <svg x-show="stepBDone()" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+          </svg>
+          <span x-show="!stepBDone()" class="text-white text-xs font-bold">B</span>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-slate-900">Switch service traffic</p>
+          <p class="text-xs text-slate-500">
+            Patches <span class="font-mono" x-text="status ? status.service_name : ''"></span>
+            selector to point at
+            <span class="font-mono" x-text="status?.restore_cluster?.name || 'postgres-restore'"></span>.
+            Reversible.
+          </p>
+        </div>
+        <template x-if="!stepBDone()">
+          <button @click="switchService()" :disabled="loadingB || !stepADone()" class="btn-primary !px-3 !py-1.5 text-xs">
+            <svg x-show="loadingB" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Switch Traffic
+          </button>
+        </template>
+        <template x-if="stepBDone()">
+          <button @click="unswitchService()" :disabled="loadingB" class="btn-ghost !px-3 !py-1.5 text-xs text-slate-500">
+            ↩ Undo
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Step C: Verify -->
+    <div :class="!stepBDone() ? 'opacity-40' : ''"
+      class="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 space-y-1.5 transition-opacity">
+      <p class="text-sm font-semibold text-emerald-900">C — Verify</p>
+      <p class="text-xs text-emerald-800">
+        Traffic is now routing to
+        <span class="font-mono" x-text="status?.restore_cluster?.name || 'postgres-restore'"></span>.
+        Test your application, run queries, confirm data integrity.
+        If anything looks wrong, use the ↩ Undo buttons above to roll back instantly.
+      </p>
+      <div class="font-mono text-xs text-emerald-900 bg-emerald-100 rounded-lg px-3 py-2 mt-1"
+        x-text="status ? 'psql -h ' + (status.service_name || 'postgres-rw') + ' -U postgres' : ''">
+      </div>
+    </div>
+
+    <!-- Cleanup (destructive) -->
+    <div class="pt-4 border-t border-slate-200 space-y-3" :class="!stepBDone() ? 'opacity-40 pointer-events-none' : ''">
+      <div class="flex items-start gap-2">
+        <svg class="w-4 h-4 text-rose-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <div>
+          <p class="text-sm font-semibold text-slate-900">D — Permanent cleanup <span class="text-rose-600">(irreversible)</span></p>
+          <p class="text-xs text-slate-500 mt-0.5">
+            Deletes the hibernated <span class="font-mono" x-text="status && status.original_cluster ? status.original_cluster.name : 'postgres'"></span>
+            Cluster CRD and its PVCs. Only do this once you're satisfied the restore cluster is healthy.
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <input type="text" x-model="cleanupConfirm" class="input max-w-xs !text-sm"
+          :placeholder="'Type \'' + (status && status.original_cluster ? status.original_cluster.name : 'postgres') + '\' to confirm'">
+        <button @click="cleanup()" :disabled="loadingCleanup || !cleanupReady()" class="btn-danger !px-3 !py-1.5 text-xs">
+          <svg x-show="loadingCleanup" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Delete Original
+        </button>
+      </div>
+    </div>
+
+    </div><!-- end Steps A–D wrapper -->
+
+    <!-- Step E: Finalize — re-create cluster with production name -->
+    <div x-show="stepEVisible()" x-cloak class="pt-4 border-t border-slate-200 space-y-4">
+
+      <div class="flex items-start gap-3">
+        <div :class="finalizePhase === 'done' ? 'bg-emerald-500' : 'bg-brand-600'"
+          class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors">
+          <svg x-show="finalizePhase === 'done'" class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+          </svg>
+          <span x-show="finalizePhase !== 'done'" class="text-white text-xs font-bold">E</span>
+        </div>
+        <div class="flex-1">
+          <p class="text-sm font-semibold text-slate-900">
+            Finalize: re-create as
+            <span class="font-mono" x-text="status?.original_cluster?.name || 'postgres'"></span>
+          </p>
+          <p class="text-xs text-slate-500 mt-0.5">
+            Streams a full base backup directly from the live
+            <span class="font-mono" x-text="restoreName()"></span> cluster — no S3 required.
+            Once the new cluster is healthy, services are switched back and
+            <span class="font-mono" x-text="restoreName()"></span> is deleted.
+            ArgoCD/Helm will find the production cluster already in place on next sync.
+          </p>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div x-show="promoteError" x-cloak
+        class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-4 py-3" x-text="promoteError">
+      </div>
+
+      <!-- Original PVC safety-net info -->
+      <template x-if="originalPvcs.length > 0 && finalizePhase === 'idle'">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 space-y-2">
+          <p class="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            Original PVCs preserved as safety net
+          </p>
+          <p class="text-xs text-amber-800">
+            These volumes contain the pre-restore database and were kept when the cluster was deleted.
+            Mount them to a plain Postgres pod to read or dump data if needed.
+            <strong>Delete them before proceeding</strong> — the new
+            <span class="font-mono" x-text="status?.original_cluster?.name || 'postgres'"></span>
+            cluster cannot be created while they exist (name conflict).
+          </p>
+          <div class="flex flex-wrap gap-1.5 pt-0.5">
+            <template x-for="pvc in originalPvcs" :key="pvc">
+              <span class="font-mono text-xs bg-amber-100 text-amber-900 border border-amber-300 rounded px-2 py-0.5" x-text="pvc"></span>
+            </template>
+          </div>
+          <button @click="deleteOriginalPvcs()" :disabled="loadingPvcs"
+            class="btn-danger !px-3 !py-1.5 text-xs mt-1">
+            <svg x-show="loadingPvcs" x-cloak class="animate-spin w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Delete original PVCs
+          </button>
+        </div>
+      </template>
+
+      <!-- idle -->
+      <template x-if="finalizePhase === 'idle'">
+        <button @click="startFinalize()" :disabled="loadingE || originalPvcs.length > 0"
+          :title="originalPvcs.length > 0 ? 'Delete original PVCs first' : ''"
+          class="btn-primary !px-3 !py-1.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed">
+          <svg x-show="loadingE" x-cloak class="animate-spin w-3.5 h-3.5 mr-1.5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Create as <span class="font-mono ml-1" x-text="status?.original_cluster?.name || 'postgres'"></span>
+        </button>
+      </template>
+
+      <!-- creating — poll until healthy -->
+      <template x-if="finalizePhase === 'creating'">
+        <div class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3">
+          <svg class="animate-spin w-4 h-4 text-brand-600 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-slate-700">
+            Creating
+            <span class="font-mono" x-text="status?.original_cluster?.name || 'postgres'"></span>…
+            <span class="text-slate-500"
+              x-text="status?.original_cluster?.exists ? '(' + status.original_cluster.phase + ')' : '(pending)'">
+            </span>
+          </span>
+        </div>
+      </template>
+
+      <!-- ready — new cluster healthy, confirm switch + delete -->
+      <template x-if="finalizePhase === 'ready'">
+        <div class="space-y-3">
+          <div class="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-800">
+            <span class="font-mono" x-text="status?.original_cluster?.name || 'postgres'"></span>
+            is healthy. Click below to point services back at it and delete
+            <span class="font-mono" x-text="restoreName()"></span>.
+          </div>
+          <button @click="switchAndCleanup()" :disabled="loadingE" class="btn-primary !px-3 !py-1.5 text-xs">
+            <svg x-show="loadingE" x-cloak class="animate-spin w-3.5 h-3.5 mr-1.5" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Switch traffic &amp; delete restore cluster
+          </button>
+        </div>
+      </template>
+
+      <!-- switching -->
+      <template x-if="finalizePhase === 'switching'">
+        <div class="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3">
+          <svg class="animate-spin w-4 h-4 text-brand-600 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-slate-700">Switching traffic and deleting restore cluster…</span>
+        </div>
+      </template>
+
+      <!-- done -->
+      <template x-if="finalizePhase === 'done'">
+        <div class="space-y-3">
+          <div class="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-800">
+            Done.
+            <span class="font-mono" x-text="status?.original_cluster?.name || 'postgres'"></span>
+            is now the primary cluster. ArgoCD/Helm will find it in place on the next sync.
+          </div>
+          <div class="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-900 space-y-1.5">
+            <p class="font-semibold flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Post-restore base backup triggered automatically
+            </p>
+            <p class="text-blue-800">
+              After every restore the cluster starts on a new timeline. A base backup has been triggered automatically
+              so a recovery point exists on the new timeline right away — without it, the restore page would show no
+              new backups until the next scheduled run.
+              Check the <a href="/backups" class="underline font-medium">Backups page</a> to track progress (~10–20 min).
+              Once complete, <strong>Scan S3</strong> on this page will show the new base backup.
+            </p>
+          </div>
+        </div>
+      </template>
+
+    </div><!-- end Step E -->
+
+  </div>
+
+  <!-- Delete confirmation modal -->
+  <div x-show="deleteModal" x-cloak
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6 space-y-5">
+      <h3 class="text-lg font-semibold text-slate-900">Delete Restore Cluster?</h3>
+      <p class="text-sm text-slate-600">
+        This will delete
+        <span class="font-mono text-slate-900" x-text="restoreCluster.name || 'postgres-restore'"></span>
+        and its PVCs. All data will be lost.
+      </p>
+      <div class="flex items-center gap-3">
+        <button @click="doDeleteRestore()" :disabled="deleteLoading" class="btn-danger flex-1">
+          <svg x-show="deleteLoading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Delete Everything
+        </button>
+        <button @click="deleteModal = false" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active restore cluster status — shown at the bottom so it doesn't push down the form -->
+  <div x-show="restoreCluster.exists" x-cloak class="card border-amber-200 bg-amber-50 space-y-4">
+    <div class="flex items-start justify-between">
+      <div class="flex items-start gap-3">
+        <svg class="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <div>
+          <p class="text-amber-900 font-semibold text-sm">Restore In Progress</p>
+          <p class="text-amber-900/70 text-xs mt-0.5">
+            Cluster <span class="font-mono" x-text="restoreCluster.name || 'postgres-restore'"></span> —
+            Phase: <span class="font-semibold" x-text="restoreCluster.phase"></span>
+          </p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-1.5" x-show="!isRestoreHealthy()">
+          <div class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></div>
+          <span class="text-xs text-amber-700">Auto-refresh 10s</span>
+        </div>
+        <span class="badge" :class="phaseBadge(restoreCluster.phase)" x-text="restoreCluster.phase"></span>
+      </div>
+    </div>
+    <template x-if="restoreCluster.conditions && restoreCluster.conditions.length > 0">
+      <div class="space-y-1.5 pl-8">
+        <template x-for="cond in restoreCluster.conditions" :key="cond.type">
+          <div class="flex items-center gap-2 text-xs">
+            <span :class="cond.status === 'True' ? 'text-emerald-600' : 'text-rose-600'">
+              <svg x-show="cond.status === 'True'" class="w-3.5 h-3.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+              </svg>
+              <svg x-show="cond.status !== 'True'" x-cloak class="w-3.5 h-3.5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </span>
+            <span class="text-slate-700" x-text="cond.type"></span>
+            <span class="text-slate-500" x-show="cond.message" x-text="'— ' + cond.message"></span>
+          </div>
+        </template>
+      </div>
+    </template>
+    <div class="pl-8">
+      <button @click="confirmDeleteRestore()" class="btn-danger !px-3 !py-1.5 text-xs">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+        </svg>
+        Delete Restore Cluster + PVCs
+      </button>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function restorePage() {
+  return {
+    form: {
+      sourceCluster: '{{ default_cluster }}',
+      customCluster: '',
+      bucket: '{{ s3_bucket }}',
+      env: '{{ s3_env }}',
+      targetTime: '',
+      destinationPath: '',
+    },
+    rangeResult: null,
+    rangeLoading: false,
+    rangeError: '',
+    validation: null,
+    restoreLoading: false,
+    restoreError: '',
+    restoreSuccess: false,
+    restoreCluster: { exists: false, phase: '', conditions: [] },
+    deleteModal: false,
+    deleteLoading: false,
+
+    _restoreTimer: null,
+
+    init() {
+      this.loadRestoreStatus();
+      this._restoreTimer = setInterval(async () => {
+        if (this.restoreCluster.exists && !this.isRestoreHealthy()) {
+          await this.loadRestoreStatus();
+        }
+      }, 10000);
+    },
+
+    isRestoreHealthy() {
+      return (this.restoreCluster.phase || '').toLowerCase().includes('healthy');
+    },
+
+    phaseBadge(phase) {
+      const p = (phase || '').toLowerCase();
+      if (p.includes('healthy')) return 'badge-green';
+      if (p.includes('setting up') || p.includes('upgrading')) return 'badge-yellow';
+      if (p.includes('error') || p.includes('fail')) return 'badge-red';
+      return 'badge-slate';
+    },
+
+    effectiveCluster() {
+      return this.form.sourceCluster === '' ? this.form.customCluster : this.form.sourceCluster;
+    },
+
+    fmtTs(ts) {
+      if (!ts) return '—';
+      try {
+        return new Date(ts).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+      } catch { return ts; }
+    },
+
+    // --- timeline helpers ---
+
+    missingHistoryTimelines() {
+      if (!this.rangeResult) return [];
+      const timelines = Object.keys(this.rangeResult.wal_coverage).map(t => parseInt(t));
+      const hasHistory = new Set(this.rangeResult.history_timelines || []);
+      return timelines.filter(tl => tl > 1 && !hasHistory.has(tl)).sort();
+    },
+
+    timelineHealthColor(tl) {
+      if (tl === 1) return 'bg-emerald-500';
+      const hasHistory = (this.rangeResult?.history_timelines || []).includes(tl);
+      return hasHistory ? 'bg-emerald-500' : 'bg-amber-400';
+    },
+
+    historyFilename(tl) {
+      return tl.toString(16).padStart(8, '0') + '.history';
+    },
+
+    historyFixStep1(tl) {
+      const fname = this.historyFilename(tl);
+      const ns = '{{ namespace }}';
+      return `kubectl exec <postgres-primary-pod> -n ${ns} -- cat /var/lib/postgresql/data/pgdata/pg_wal/${fname} > ${fname}`;
+    },
+
+    historyFixStep2(tl) {
+      const fname = this.historyFilename(tl);
+      const tlHex = tl.toString(16).padStart(16, '0').toUpperCase().slice(0, 16);
+      const bucket = this.form.bucket;
+      const env = this.form.env;
+      const cluster = this.effectiveCluster();
+      return `aws s3 cp ${fname} s3://${bucket}/${env}/cnpg/${cluster}/wals/${tlHex.slice(0,8)}00000000/${fname}`;
+    },
+
+    historyFixStep3(_tl) {
+      return `# Then click "Scan S3" above to refresh the timeline status`;
+    },
+
+    walLastModified(tl) {
+      return this.rangeResult?.wal_coverage?.[tl.toString()]?.last_modified || null;
+    },
+
+    latestTimelineBackupEndTime() {
+      if (!this.rangeResult?.backups?.length) return null;
+      const timelines = Object.keys(this.rangeResult.wal_coverage).map(t => parseInt(t));
+      const maxTl = timelines.length ? Math.max(...timelines) : 1;
+      const tlBackups = this.rangeResult.backups.filter(b => b.timeline === maxTl && b.status === 'DONE');
+      if (!tlBackups.length) return null;
+      return tlBackups.reduce((a, b) => new Date(b.end_time) > new Date(a.end_time) ? b : a).end_time;
+    },
+
+    // Show the recoverable range for a backup row
+    backupRecoverableRange(backup) {
+      if (backup.status !== 'DONE') return '<span class="text-slate-400">N/A</span>';
+      const tl = backup.timeline;
+      const tlKey = tl.toString();
+      const walCov = this.rangeResult?.wal_coverage?.[tlKey];
+      const historyOk = tl === 1 || (this.rangeResult?.history_timelines || []).includes(tl);
+      const endTime = this.fmtTs(backup.end_time);
+      const walEnd = walCov ? this.fmtTs(walCov.last_modified) : null;
+      if (!walCov) return `<span class="text-slate-500">Exact backup time only</span>`;
+      const rangeStr = `<span class="font-mono">${endTime}</span> → <span class="font-mono">${walEnd || '?'}</span>`;
+      if (!historyOk) {
+        return rangeStr + ' <span class="text-amber-600 text-xs">(history missing)</span>';
+      }
+      return rangeStr;
+    },
+
+    // --- target time validation ---
+
+    validateTarget() {
+      if (!this.rangeResult || !this.form.targetTime) { this.validation = null; return; }
+
+      const raw = this.form.targetTime; // "YYYY-MM-DDTHH:MM"
+      const target = new Date(raw.length === 16 ? raw + ':00Z' : raw + 'Z');
+      if (isNaN(target)) { this.validation = null; return; }
+
+      const backups = (this.rangeResult.backups || []).filter(b => b.status === 'DONE');
+      const walCoverage = this.rangeResult.wal_coverage || {};
+      const historyTimelines = new Set(this.rangeResult.history_timelines || []);
+
+      // Most recent backup whose end_time <= target
+      const eligible = backups
+        .filter(b => b.end_time && new Date(b.end_time) <= target)
+        .sort((a, b) => new Date(b.end_time) - new Date(a.end_time));
+
+      if (!eligible.length) {
+        const earliest = backups[0]?.end_time;
+        this.validation = {
+          feasible: false,
+          error: 'No base backup exists before the selected time. Earliest backup: ' + this.fmtTs(earliest) + '.',
+          remediation: 'no_backup',
+        };
+        return;
+      }
+
+      const backup = eligible[0];
+      const backupTimeline = backup.timeline;
+      const requiresWalReplay = target > new Date(backup.end_time);
+
+      // Find the highest available timeline
+      const timelines = Object.keys(walCoverage).map(t => parseInt(t));
+      const maxTimeline = timelines.length ? Math.max(...timelines) : backupTimeline;
+
+      const timelineSwitchNeeded = backupTimeline < maxTimeline;
+      const missingHistory = [];
+      if (timelineSwitchNeeded) {
+        for (let tl = backupTimeline + 1; tl <= maxTimeline; tl++) {
+          if (!historyTimelines.has(tl)) missingHistory.push(tl);
+        }
+      }
+
+      if (missingHistory.length > 0) {
+        this.validation = {
+          feasible: false,
+          backup: backup.name,
+          backupTimeline,
+          requiresWalReplay,
+          timelineSwitchNeeded: true,
+          missingHistoryFiles: missingHistory,
+          error: `The selected time requires crossing from timeline ${backupTimeline} to timeline ${maxTimeline}, but the timeline history file is missing from S3.`,
+          remediation: 'history_file',
+        };
+        return;
+      }
+
+      // Check for WAL gap at the timeline boundary
+      if (timelineSwitchNeeded && backup.end_wal) {
+        const neededSegNum = backup.end_wal.slice(16); // last 8 hex chars = segment number
+        for (let tl = backupTimeline + 1; tl <= maxTimeline; tl++) {
+          const cov = walCoverage[tl.toString()];
+          if (cov && cov.first_segment) {
+            const tl2FirstSegNum = cov.first_segment.slice(16);
+            if (tl2FirstSegNum > neededSegNum) {
+              const missingFrom = neededSegNum;
+              const missingTo = (parseInt(tl2FirstSegNum, 16) - 1).toString(16).padStart(8, '0');
+              const latestTlBackup = this.latestTimelineBackupEndTime();
+              this.validation = {
+                feasible: false,
+                backup: backup.name,
+                backupTimeline,
+                requiresWalReplay: true,
+                timelineSwitchNeeded: true,
+                error: `WAL gap on timeline ${tl}: recovery needs segment ${neededSegNum} but the earliest archived segment is ${tl2FirstSegNum} — segments ${missingFrom}–${missingTo} were never archived and cannot be recovered.`,
+                remediation: 'wal_gap',
+                latestTlBackup,
+              };
+              return;
+            }
+          }
+        }
+      }
+
+      // Check WAL coverage
+      let warning = null;
+      if (requiresWalReplay) {
+        const checkTl = timelineSwitchNeeded ? maxTimeline : backupTimeline;
+        const cov = walCoverage[checkTl.toString()];
+        if (!cov) {
+          this.validation = {
+            feasible: false,
+            error: `No WAL segments found on timeline ${checkTl}.`,
+            remediation: null,
+          };
+          return;
+        }
+        if (cov.last_modified && target > new Date(cov.last_modified)) {
+          warning = `Target time is beyond the latest uploaded WAL (${this.fmtTs(cov.last_modified)}). Recovery will stop at the latest available point.`;
+        }
+      }
+
+      // Auto-populate destination path
+      if (!this.form.destinationPath) {
+        this.form.destinationPath = `s3://${this.form.bucket}/${this.form.env}/cnpg`;
+      }
+
+      this.validation = {
+        feasible: true,
+        backup: backup.name,
+        backupTimeline,
+        requiresWalReplay,
+        timelineSwitchNeeded,
+        warning,
+      };
+    },
+
+    // --- S3 scan ---
+
+    async checkRange() {
+      const cluster = this.effectiveCluster();
+      if (!cluster || !this.form.bucket || !this.form.env) {
+        this.rangeError = 'Cluster, bucket, and environment are required.';
+        return;
+      }
+      this.rangeLoading = true;
+      this.rangeError = '';
+      this.rangeResult = null;
+      this.validation = null;
+      try {
+        const params = new URLSearchParams({ cluster, bucket: this.form.bucket, env: this.form.env });
+        const res = await fetch('/api/restore/range?' + params);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.rangeResult = data;
+        // Persist bucket + env
+        fetch('/api/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ s3_bucket: this.form.bucket, s3_env: this.form.env }),
+        }).catch(() => {});
+        // Re-validate if a target was already set
+        if (this.form.targetTime) this.validateTarget();
+      } catch(e) {
+        this.rangeError = 'Failed to scan S3: ' + e.message;
+      } finally {
+        this.rangeLoading = false;
+      }
+    },
+
+    // --- restore ---
+
+    async startRestore() {
+      const cluster = this.effectiveCluster();
+      if (!this.form.targetTime || !cluster || !this.form.destinationPath) {
+        this.restoreError = 'All fields are required.';
+        return;
+      }
+      this.restoreLoading = true;
+      this.restoreError = '';
+      this.restoreSuccess = false;
+      try {
+        const raw = this.form.targetTime;
+        // PostgreSQL native format: "YYYY-MM-DD HH:MM:SS"
+        const targetTime = (raw.length === 16 ? raw + ':00' : raw).replace('T', ' ');
+        const res = await fetch('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_time: targetTime,
+            source_cluster: cluster,
+            destination_path: this.form.destinationPath,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.restoreSuccess = true;
+        await this.loadRestoreStatus();
+      } catch(e) {
+        this.restoreError = 'Restore failed: ' + e.message;
+      } finally {
+        this.restoreLoading = false;
+      }
+    },
+
+    async loadRestoreStatus() {
+      try {
+        const res = await fetch('/api/restore/status');
+        const data = await res.json();
+        this.restoreCluster = data;
+      } catch(e) { /* silent */ }
+    },
+
+    confirmDeleteRestore() { this.deleteModal = true; },
+
+    async doDeleteRestore() {
+      this.deleteLoading = true;
+      try {
+        const res = await fetch('/api/restore', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.deleteModal = false;
+        this.restoreCluster = { exists: false };
+      } catch(e) {
+        this.deleteModal = false;
+        alert('Delete failed: ' + e.message);
+      } finally {
+        this.deleteLoading = false;
+      }
+    },
+  };
+}
+
+function promotePage() {
+  return {
+    status: null,
+    loadingA: false,
+    loadingB: false,
+    loadingCleanup: false,
+    promoteError: '',
+    cleanupConfirm: '',
+
+    // Step E state
+    loadingE: false,
+    finalizePhase: 'idle',  // idle | creating | ready | switching | done
+    _finalizePollTimer: null,
+    originalPvcs: [],
+    loadingPvcs: false,
+
+    async init() {
+      await this.loadStatus();
+      await this.loadOriginalPvcs();
+    },
+
+    async loadStatus() {
+      try {
+        const res = await fetch('/api/promote/status');
+        const data = await res.json();
+        if (res.ok) this.status = data;
+      } catch(e) { /* silent */ }
+    },
+
+    async loadOriginalPvcs() {
+      try {
+        const res = await fetch('/api/promote/original-pvcs');
+        const data = await res.json();
+        if (res.ok) this.originalPvcs = data.pvcs || [];
+      } catch(e) { /* silent */ }
+    },
+
+    async deleteOriginalPvcs() {
+      this.loadingPvcs = true;
+      this.promoteError = '';
+      try {
+        const res = await fetch('/api/promote/original-pvcs', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.originalPvcs = [];
+      } catch(e) { this.promoteError = 'PVC delete failed: ' + e.message; }
+      finally { this.loadingPvcs = false; }
+    },
+
+    restoreName() {
+      return this.status?.restore_cluster?.name || 'postgres-restore';
+    },
+
+    stepADone() {
+      if (!this.status) return false;
+      const oc = this.status.original_cluster;
+      return !oc.exists || oc.hibernated;
+    },
+
+    stepBDone() {
+      if (!this.status || !this.status.service) return false;
+      return this.status.service.cluster_selector === this.restoreName();
+    },
+
+    stepDDone() {
+      if (!this.status) return false;
+      return !this.status.original_cluster?.exists;
+    },
+
+    serviceOnRestore() {
+      return this.status?.service?.cluster_selector === this.restoreName();
+    },
+
+    stepEVisible() {
+      return this.stepDDone() || this.finalizePhase !== 'idle';
+    },
+
+    cleanupReady() {
+      if (!this.status) return false;
+      const expected = this.status.original_cluster?.name || 'postgres';
+      return this.cleanupConfirm === expected && this.stepBDone();
+    },
+
+    async hibernate() {
+      this.loadingA = true;
+      this.promoteError = '';
+      try {
+        const res = await fetch('/api/promote/hibernate', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        await this.loadStatus();
+      } catch(e) { this.promoteError = 'Hibernate failed: ' + e.message; }
+      finally { this.loadingA = false; }
+    },
+
+    async unhibernate() {
+      this.loadingA = true;
+      this.promoteError = '';
+      try {
+        const res = await fetch('/api/promote/unhibernate', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        await this.loadStatus();
+      } catch(e) { this.promoteError = 'Un-hibernate failed: ' + e.message; }
+      finally { this.loadingA = false; }
+    },
+
+    async switchService() {
+      this.loadingB = true;
+      this.promoteError = '';
+      try {
+        const res = await fetch('/api/promote/switch', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        await this.loadStatus();
+      } catch(e) { this.promoteError = 'Service switch failed: ' + e.message; }
+      finally { this.loadingB = false; }
+    },
+
+    async unswitchService() {
+      this.loadingB = true;
+      this.promoteError = '';
+      try {
+        const res = await fetch('/api/promote/unswitch', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        await this.loadStatus();
+      } catch(e) { this.promoteError = 'Rollback failed: ' + e.message; }
+      finally { this.loadingB = false; }
+    },
+
+    async cleanup() {
+      if (!this.cleanupReady()) return;
+      this.loadingCleanup = true;
+      this.promoteError = '';
+      try {
+        const name = this.status?.original_cluster?.name || 'postgres';
+        const res = await fetch('/api/promote/cleanup', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.cleanupConfirm = '';
+        await this.loadStatus();
+        await this.loadOriginalPvcs();
+      } catch(e) { this.promoteError = 'Cleanup failed: ' + e.message; }
+      finally { this.loadingCleanup = false; }
+    },
+
+    // --- Step E: Finalize ---
+
+    async startFinalize() {
+      this.loadingE = true;
+      this.promoteError = '';
+      this.finalizePhase = 'creating';
+      try {
+        const res = await fetch('/api/promote/finalize', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this._startFinalizePolling();
+      } catch(e) {
+        this.promoteError = e.message;
+        this.finalizePhase = 'idle';
+      } finally { this.loadingE = false; }
+    },
+
+    _startFinalizePolling() {
+      clearInterval(this._finalizePollTimer);
+      this._finalizePollTimer = setInterval(async () => {
+        await this.loadStatus();
+        const oc = this.status?.original_cluster;
+        if (oc?.exists && (oc.phase || '').toLowerCase().includes('healthy')) {
+          clearInterval(this._finalizePollTimer);
+          this.finalizePhase = 'ready';
+        }
+      }, 5000);
+    },
+
+    async switchAndCleanup() {
+      this.loadingE = true;
+      this.promoteError = '';
+      this.finalizePhase = 'switching';
+      try {
+        const switchRes = await fetch('/api/promote/unswitch', { method: 'POST' });
+        const switchData = await switchRes.json();
+        if (!switchRes.ok) throw new Error(switchData.error || 'Switch failed');
+
+        const delRes = await fetch('/api/restore', { method: 'DELETE' });
+        const delData = await delRes.json();
+        if (!delRes.ok) throw new Error(delData.error || 'Delete failed');
+
+        this.finalizePhase = 'done';
+        await this.loadStatus();
+      } catch(e) {
+        this.promoteError = e.message;
+        this.finalizePhase = 'ready';
+      } finally { this.loadingE = false; }
+    },
+  };
+}
+</script>
+{% endblock %}

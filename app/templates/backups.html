@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block title %}Backups — CNPG UI{% endblock %}
+{% block header_title %}Backups{% endblock %}
+
+{% block content %}
+<div x-data="backupsPage()" x-init="init()" class="space-y-8">
+
+  <!-- Error banner -->
+  {% if error_msg %}
+  <div class="flex items-start gap-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <span>{{ error_msg }}</span>
+  </div>
+  {% endif %}
+
+  <!-- Header actions -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-bold text-slate-900">Backup History</h1>
+      <p class="text-sm text-slate-500 mt-0.5">On-demand and scheduled backups</p>
+    </div>
+    <button @click="openModal()" class="btn-primary">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      New Backup
+    </button>
+  </div>
+
+  <!-- Backups table -->
+  <div class="card !p-0 overflow-hidden">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+      <h2 class="text-base font-semibold text-slate-900">All Backups</h2>
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full bg-sky-400 animate-pulse"></div>
+        <span class="text-xs text-slate-500">Auto-refresh 15s for running</span>
+      </div>
+    </div>
+
+    <div x-show="loading" class="flex items-center justify-center py-16">
+      <svg class="animate-spin w-6 h-6 text-brand-700" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+    </div>
+
+    <table x-show="!loading" class="w-full" x-cloak>
+      <thead class="bg-slate-50">
+        <tr>
+          <th>Name</th>
+          <th>Cluster</th>
+          <th>Status</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Duration</th>
+          <th class="text-right pr-6">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-200">
+        <template x-if="backups.length === 0">
+          <tr>
+            <td colspan="7" class="text-center py-12 text-slate-500">No backups found.</td>
+          </tr>
+        </template>
+        <template x-for="b in backups" :key="b.name">
+          <tr class="hover:bg-slate-50 transition-colors">
+            <td class="font-mono text-xs text-slate-700" x-text="b.name"></td>
+            <td>
+              <a :href="'/clusters/' + b.cluster"
+                 class="text-brand-700 hover:text-brand-800 text-sm" x-text="b.cluster || '—'"></a>
+            </td>
+            <td>
+              <span class="badge" :class="statusBadge(b.status)" x-text="b.status"></span>
+            </td>
+            <td class="text-slate-600" x-text="fmtTs(b.started_at)"></td>
+            <td class="text-slate-600" x-text="fmtTs(b.stopped_at)"></td>
+            <td class="text-slate-600" x-text="b.duration || '—'"></td>
+            <td class="text-right pr-6">
+              <button
+                @click="confirmDelete(b.name)"
+                class="btn-ghost !px-3 !py-1.5 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 hover:border-rose-200">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                Delete
+              </button>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- New Backup Modal -->
+  <div x-show="modalOpen" x-cloak
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm"
+    @keydown.escape.window="closeModal()">
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-5"
+         @click.stop>
+      <div class="flex items-center justify-between">
+        <h3 class="text-lg font-semibold text-slate-900">New Backup</h3>
+        <button @click="closeModal()" class="text-slate-500 hover:text-slate-700 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="label">Cluster</label>
+          <select x-model="newBackup.cluster" @change="updateBackupName()" class="input">
+            {% for c in clusters %}
+            <option value="{{ c }}"{% if c == default_cluster %} selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="label">Backup Name</label>
+          <input type="text" x-model="newBackup.name" class="input"
+            placeholder="e.g. postgres-ondemand-20260501120000" />
+          <p class="mt-1 text-xs text-slate-500">Auto-generated, feel free to customise.</p>
+        </div>
+      </div>
+
+      <div x-show="modalError" x-cloak
+        class="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2" x-text="modalError">
+      </div>
+
+      <div class="flex items-center gap-3 pt-1">
+        <button @click="createBackup()" :disabled="modalLoading" class="btn-primary flex-1">
+          <svg x-show="!modalLoading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+          </svg>
+          <svg x-show="modalLoading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Create Backup
+        </button>
+        <button @click="closeModal()" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Confirmation Modal -->
+  <div x-show="deleteModal" x-cloak
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm">
+    <div class="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6 space-y-5"
+         @click.stop>
+      <h3 class="text-lg font-semibold text-slate-900">Delete Backup?</h3>
+      <p class="text-sm text-slate-600">
+        Are you sure you want to delete
+        <span class="font-mono text-slate-900" x-text="deleteTarget"></span>?
+        This action cannot be undone.
+      </p>
+      <div class="flex items-center gap-3">
+        <button @click="doDelete()" :disabled="deleteLoading" class="btn-danger flex-1">
+          <svg x-show="deleteLoading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Delete
+        </button>
+        <button @click="deleteModal = false" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div x-show="toast" x-cloak x-transition
+    class="fixed bottom-6 right-6 z-50 bg-white border border-slate-200 rounded-xl px-5 py-3.5 shadow-2xl flex items-center gap-3">
+    <span :class="toastType === 'success' ? 'text-emerald-600' : 'text-rose-600'">
+      <svg x-show="toastType === 'success'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <svg x-show="toastType === 'error'" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </span>
+    <p class="text-sm text-slate-800" x-text="toastMsg"></p>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function backupsPage() {
+  return {
+    backups: {{ backups | tojson }},
+    loading: false,
+    modalOpen: false,
+    modalLoading: false,
+    modalError: '',
+    newBackup: { cluster: '{{ default_cluster }}', name: '' },
+    deleteModal: false,
+    deleteTarget: '',
+    deleteLoading: false,
+    toast: false,
+    toastMsg: '',
+    toastType: 'success',
+    _timer: null,
+
+    init() {
+      this.updateBackupName();
+      this._timer = setInterval(() => this.refresh(), 15000);
+    },
+
+    async refresh() {
+      try {
+        const res = await fetch('/api/backups');
+        const data = await res.json();
+        if (!Array.isArray(data)) return;
+        this.backups = data.map(b => ({
+          ...b,
+          started_at: b.started_at,
+          stopped_at: b.stopped_at,
+        }));
+      } catch(e) { /* silent */ }
+    },
+
+    statusBadge(status) {
+      const s = (status || '').toLowerCase();
+      if (s === 'completed') return 'badge-green';
+      if (s === 'running' || s === 'pending') return 'badge-blue';
+      return 'badge-red';
+    },
+
+    fmtTs(ts) {
+      if (!ts) return '—';
+      try {
+        const d = new Date(ts);
+        return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+      } catch { return ts; }
+    },
+
+    openModal() {
+      this.modalError = '';
+      this.updateBackupName();
+      this.modalOpen = true;
+    },
+
+    closeModal() {
+      this.modalOpen = false;
+      this.modalError = '';
+    },
+
+    updateBackupName() {
+      const ts = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+      this.newBackup.name = (this.newBackup.cluster || 'cluster') + '-ondemand-' + ts;
+    },
+
+    async createBackup() {
+      if (!this.newBackup.cluster || !this.newBackup.name) {
+        this.modalError = 'Cluster and backup name are required.';
+        return;
+      }
+      this.modalLoading = true;
+      this.modalError = '';
+      try {
+        const res = await fetch('/api/backups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cluster_name: this.newBackup.cluster, backup_name: this.newBackup.name }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.closeModal();
+        this.showToast('Backup ' + data.name + ' created.', 'success');
+        await this.refresh();
+      } catch(e) {
+        this.modalError = e.message;
+      } finally {
+        this.modalLoading = false;
+      }
+    },
+
+    confirmDelete(name) {
+      this.deleteTarget = name;
+      this.deleteModal = true;
+    },
+
+    async doDelete() {
+      this.deleteLoading = true;
+      try {
+        const res = await fetch('/api/backups/' + encodeURIComponent(this.deleteTarget), {
+          method: 'DELETE',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.deleteModal = false;
+        this.showToast('Backup deleted.', 'success');
+        this.backups = this.backups.filter(b => b.name !== this.deleteTarget);
+      } catch(e) {
+        this.deleteModal = false;
+        this.showToast('Delete failed: ' + e.message, 'error');
+      } finally {
+        this.deleteLoading = false;
+      }
+    },
+
+    showToast(msg, type = 'success') {
+      this.toastMsg = msg;
+      this.toastType = type;
+      this.toast = true;
+      setTimeout(() => { this.toast = false; }, 4000);
+    },
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — CNPG UI{% endblock %}
+{% block header_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div x-data="dashboard()" x-init="init()" class="space-y-8">
+
+  <!-- Error banner -->
+  {% if error_msg %}
+  <div class="flex items-start gap-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <span>{{ error_msg }}</span>
+  </div>
+  {% endif %}
+
+  <!-- JS error banner -->
+  <div x-show="jsError" x-cloak
+    class="flex items-start gap-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <span x-text="jsError"></span>
+  </div>
+
+  <!-- Stats row -->
+  <div class="grid grid-cols-3 gap-6">
+    <div class="card" x-cloak>
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Total Clusters</p>
+          <p class="text-3xl font-bold text-slate-900" x-text="stats.total">{{ stats.total }}</p>
+        </div>
+        <div class="w-12 h-12 bg-brand-50 rounded-xl flex items-center justify-center border border-brand-100">
+          <svg class="w-6 h-6 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Healthy</p>
+          <p class="text-3xl font-bold text-emerald-600" x-text="stats.healthy">{{ stats.healthy }}</p>
+        </div>
+        <div class="w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center border border-emerald-100">
+          <svg class="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Archiving Errors</p>
+          <p class="text-3xl font-bold" :class="stats.archiving_errors > 0 ? 'text-rose-600' : 'text-slate-700'"
+             x-text="stats.archiving_errors">{{ stats.archiving_errors }}</p>
+        </div>
+        <div class="w-12 h-12 bg-rose-50 rounded-xl flex items-center justify-center border border-rose-100">
+          <svg class="w-6 h-6 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clusters table -->
+  <div class="card !p-0 overflow-hidden">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+      <h2 class="text-base font-semibold text-slate-900">Clusters</h2>
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full" :class="autoRefreshActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'"></div>
+        <span class="text-xs text-slate-500">Auto-refresh 30s</span>
+      </div>
+    </div>
+
+    <!-- Loading state -->
+    <div x-show="loading" class="flex items-center justify-center py-16">
+      <svg class="animate-spin w-6 h-6 text-brand-700" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+    </div>
+
+    <table x-show="!loading" class="w-full" x-cloak>
+      <thead class="bg-slate-50">
+        <tr>
+          <th>Name</th>
+          <th>Phase</th>
+          <th>Primary</th>
+          <th>Ready</th>
+          <th>Archiving</th>
+          <th class="text-right pr-6">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-200">
+        <template x-if="clusters.length === 0">
+          <tr>
+            <td colspan="6" class="text-center py-12 text-slate-500">No clusters found in namespace.</td>
+          </tr>
+        </template>
+        <template x-for="c in clusters" :key="c.name">
+          <tr class="hover:bg-slate-50 transition-colors">
+            <td>
+              <a :href="'/clusters/' + c.name"
+                 class="text-brand-700 hover:text-brand-800 font-medium" x-text="c.name"></a>
+            </td>
+            <td>
+              <span class="badge" :class="phaseBadge(c.phase)" x-text="c.phase"></span>
+            </td>
+            <td>
+              <span class="font-mono text-xs bg-slate-50 border border-slate-200 px-2 py-1 rounded text-slate-700" x-text="c.primary || '—'"></span>
+            </td>
+            <td>
+              <span x-text="c.ready_instances + ' / ' + c.instances"></span>
+            </td>
+            <td>
+              <span class="badge"
+                :class="c.archiving_healthy ? 'badge-green' : 'badge-red'"
+                x-text="c.archiving_healthy ? 'Healthy' : 'Error'">
+              </span>
+            </td>
+            <td class="text-right pr-6">
+              <div class="flex items-center justify-end gap-2">
+                <a :href="'/clusters/' + c.name" class="btn-ghost !px-3 !py-1.5 text-xs">Detail</a>
+                <button
+                  @click="triggerBackup(c.name)"
+                  :disabled="backupLoading[c.name]"
+                  class="btn-primary !px-3 !py-1.5 text-xs">
+                  <svg x-show="!backupLoading[c.name]" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+                  </svg>
+                  <svg x-show="backupLoading[c.name]" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                  </svg>
+                  Backup Now
+                </button>
+              </div>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Backup toast -->
+  <div x-show="toast" x-cloak x-transition
+    class="fixed bottom-6 right-6 z-50 bg-white border border-slate-200 rounded-xl px-5 py-3.5 shadow-2xl flex items-center gap-3">
+    <div :class="toastType === 'success' ? 'text-emerald-600' : 'text-rose-600'">
+      <svg x-show="toastType === 'success'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <svg x-show="toastType === 'error'" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </div>
+    <p class="text-sm text-slate-800" x-text="toastMsg"></p>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboard() {
+  return {
+    clusters: {{ clusters | tojson }},
+    stats: {{ stats | tojson }},
+    loading: false,
+    autoRefreshActive: true,
+    backupLoading: {},
+    toast: false,
+    toastMsg: '',
+    toastType: 'success',
+    jsError: '',
+    _timer: null,
+
+    init() {
+      this._timer = setInterval(() => this.refresh(), 30000);
+    },
+
+    phaseBadge(phase) {
+      const p = (phase || '').toLowerCase();
+      if (p.includes('healthy')) return 'badge-green';
+      if (p.includes('setting up') || p.includes('upgrading') || p.includes('switchover')) return 'badge-yellow';
+      if (p.includes('error') || p.includes('fail')) return 'badge-red';
+      return 'badge-slate';
+    },
+
+    async refresh() {
+      try {
+        const res = await fetch('/api/clusters');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        this.clusters = data;
+        this.stats.total = data.length;
+        this.stats.healthy = data.filter(c => (c.phase || '').toLowerCase().includes('healthy')).length;
+        this.stats.archiving_errors = data.filter(c => !c.archiving_healthy).length;
+        this.jsError = '';
+      } catch (e) {
+        this.jsError = 'Auto-refresh failed: ' + e.message;
+      }
+    },
+
+    async triggerBackup(clusterName) {
+      const ts = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+      const backupName = clusterName + '-ondemand-' + ts;
+      this.backupLoading = { ...this.backupLoading, [clusterName]: true };
+      try {
+        const res = await fetch('/api/backups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cluster_name: clusterName, backup_name: backupName }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.showToast('Backup ' + data.name + ' triggered successfully', 'success');
+      } catch (e) {
+        this.showToast('Backup failed: ' + e.message, 'error');
+      } finally {
+        this.backupLoading = { ...this.backupLoading, [clusterName]: false };
+      }
+    },
+
+    showToast(msg, type = 'success') {
+      this.toastMsg = msg;
+      this.toastType = type;
+      this.toast = true;
+      setTimeout(() => { this.toast = false; }, 4000);
+    },
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — CNPG UI{% endblock %}
+{% block header_title %}Settings{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl space-y-8">
+
+  <div>
+    <h1 class="text-xl font-bold text-slate-900">Application Settings</h1>
+    <p class="text-sm text-slate-500 mt-0.5">Configure the connection and default values. Persisted in SQLite.</p>
+  </div>
+
+  {% if saved %}
+  <div class="flex items-center gap-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    Settings saved successfully.
+  </div>
+  {% endif %}
+
+  <form action="/settings" method="POST" class="card space-y-6">
+
+    <!-- Namespace -->
+    <div>
+      <label for="namespace" class="label">Kubernetes Namespace</label>
+      <input type="text" id="namespace" name="namespace"
+        value="{{ settings.get('namespace', 'default') }}"
+        class="input" placeholder="default" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The Kubernetes namespace where CNPG Cluster and Backup CRDs are located.
+        All API calls will be scoped to this namespace.
+      </p>
+    </div>
+
+    <!-- AWS Region -->
+    <div>
+      <label for="aws_region" class="label">AWS Region</label>
+      <input type="text" id="aws_region" name="aws_region"
+        value="{{ settings.get('aws_region', 'us-east-1') }}"
+        class="input" placeholder="us-east-1" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The AWS region where your S3 backup bucket resides.
+        Used when constructing the boto3 client and injected into restore cluster manifests as
+        <span class="font-mono">AWS_DEFAULT_REGION</span>.
+      </p>
+    </div>
+
+    <!-- S3 Bucket -->
+    <div>
+      <label for="s3_bucket" class="label">S3 Bucket Name</label>
+      <input type="text" id="s3_bucket" name="s3_bucket"
+        value="{{ settings.get('s3_bucket', '') }}"
+        class="input" placeholder="my-cnpg-backups" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The S3 bucket that holds CNPG WAL archives and base backups.
+        Pre-filled in the Restore page for convenience.
+      </p>
+    </div>
+
+    <!-- S3 Env -->
+    <div>
+      <label for="s3_env" class="label">Default S3 Environment / Prefix</label>
+      <input type="text" id="s3_env" name="s3_env"
+        value="{{ settings.get('s3_env', '') }}"
+        class="input" placeholder="prod" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The path segment between the bucket name and <span class="font-mono">/cnpg/</span>
+        (e.g. <span class="font-mono">prod</span>, <span class="font-mono">sandbox</span>).
+        Pre-filled in the Restore page and auto-saved when you run a WAL range check.
+      </p>
+    </div>
+
+    <!-- Default cluster -->
+    <div>
+      <label for="default_cluster" class="label">Default Cluster Name</label>
+      <input type="text" id="default_cluster" name="default_cluster"
+        value="{{ settings.get('default_cluster', 'postgres') }}"
+        class="input" placeholder="postgres" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The CNPG cluster name that is pre-selected in dropdowns (Backup and Restore pages).
+        Typically matches the Kubernetes object name of your primary cluster.
+      </p>
+    </div>
+
+    <!-- Restore cluster name -->
+    <div>
+      <label for="restore_cluster_name" class="label">Restore Cluster Name</label>
+      <input type="text" id="restore_cluster_name" name="restore_cluster_name"
+        value="{{ settings.get('restore_cluster_name', 'postgres-restore') }}"
+        class="input" placeholder="postgres-restore" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The name of the temporary cluster created during a PITR restore.
+        Default <span class="font-mono">postgres-restore</span> gives full rollback capability.
+        Set to the same value as <strong>Default Cluster Name</strong> only after deleting the original
+        cluster — the restore then lands with the production name and ArgoCD/Helm will not recreate it.
+      </p>
+    </div>
+
+    <!-- App database credentials -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="app_owner" class="label">App Database Owner</label>
+        <input type="text" id="app_owner" name="app_owner"
+          value="{{ settings.get('app_owner', 'app') }}"
+          class="input" placeholder="app" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          PostgreSQL role that owns the application database.
+          Used as <span class="font-mono">owner</span> in the CNPG bootstrap spec so the
+          <span class="font-mono">{cluster}-app</span> secret points to the correct user.
+        </p>
+      </div>
+      <div>
+        <label for="app_database" class="label">App Database Name</label>
+        <input type="text" id="app_database" name="app_database"
+          value="{{ settings.get('app_database', 'app') }}"
+          class="input" placeholder="app" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          Name of the application database inside PostgreSQL.
+          Used as <span class="font-mono">database</span> in the CNPG bootstrap spec.
+        </p>
+      </div>
+    </div>
+
+    <!-- Storage sizes -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="storage_size" class="label">Data Volume Size</label>
+        <input type="text" id="storage_size" name="storage_size"
+          value="{{ settings.get('storage_size', '100Gi') }}"
+          class="input" placeholder="100Gi" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          Size of the <span class="font-mono">postgres-restore</span> data PVC.
+          Must be ≥ the current database size on disk. Kubernetes format: <span class="font-mono">100Gi</span>, <span class="font-mono">2Ti</span>.
+        </p>
+      </div>
+      <div>
+        <label for="wal_storage_size" class="label">WAL Volume Size</label>
+        <input type="text" id="wal_storage_size" name="wal_storage_size"
+          value="{{ settings.get('wal_storage_size', '20Gi') }}"
+          class="input" placeholder="20Gi" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          Size of the WAL PVC. For high-write databases or long PITR windows, set this
+          to at least 2× your hourly WAL generation rate × restore window in hours.
+        </p>
+      </div>
+    </div>
+
+    <!-- Backup schedule & retention -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="backup_schedule" class="label">Backup Schedule (cron)</label>
+        <input type="text" id="backup_schedule" name="backup_schedule"
+          value="{{ settings.get('backup_schedule', '0 0 2 * * 0') }}"
+          class="input font-mono" placeholder="0 0 2 * * 0" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          6-field cron used by the CNPG <span class="font-mono">ScheduledBackup</span> CRD
+          (seconds minutes hours dom month dow).
+          Default: every Sunday at 02:00 UTC.
+        </p>
+      </div>
+      <div>
+        <label for="backup_retention" class="label">Retention Policy</label>
+        <input type="text" id="backup_retention" name="backup_retention"
+          value="{{ settings.get('backup_retention', '30d') }}"
+          class="input" placeholder="30d" />
+        <p class="mt-1.5 text-xs text-slate-500">
+          How long CNPG keeps base backups. Examples: <span class="font-mono">7d</span>,
+          <span class="font-mono">14d</span>, <span class="font-mono">30d</span>.
+          Changes take effect on the next backup run — old backups are not deleted immediately.
+        </p>
+      </div>
+    </div>
+
+    <!-- AWS Credentials Secret -->
+    <div>
+      <label for="aws_credentials_secret" class="label">AWS Credentials Secret Name</label>
+      <input type="text" id="aws_credentials_secret" name="aws_credentials_secret"
+        value="{{ settings.get('aws_credentials_secret', 'aws-credentials') }}"
+        class="input" placeholder="aws-credentials" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The name of the Kubernetes Secret that holds AWS credentials for CNPG to read the S3 backup archive
+        during recovery. Expected keys: <span class="font-mono">access-key</span> and
+        <span class="font-mono">secret-key</span>.
+      </p>
+    </div>
+
+    <div class="pt-2 border-t border-slate-200 flex items-center gap-3">
+      <button type="submit" class="btn-primary">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+        </svg>
+        Save Settings
+      </button>
+    </div>
+  </form>
+
+  <!-- Info box -->
+  <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-3">
+    <h3 class="text-sm font-semibold text-slate-900 flex items-center gap-2">
+      <svg class="w-4 h-4 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      About Settings Storage
+    </h3>
+    <p class="text-xs text-slate-500 leading-relaxed">
+      Settings are stored in a SQLite database at the path configured by the
+      <span class="font-mono text-slate-400">DB_PATH</span> environment variable
+      (default: <span class="font-mono text-slate-400">/data/cnpg-ui.db</span>).
+      In production (Helm), this path is backed by a Persistent Volume Claim so settings survive pod restarts.
+    </p>
+    <p class="text-xs text-slate-500 leading-relaxed">
+      AWS access keys for S3 scanning are read from the
+      <span class="font-mono text-slate-400">AWS_ACCESS_KEY_ID</span> and
+      <span class="font-mono text-slate-400">AWS_SECRET_ACCESS_KEY</span> environment variables
+      (or instance profile if running on EC2/EKS). They are not stored in the database.
+    </p>
+  </div>
+</div>
+{% endblock %}

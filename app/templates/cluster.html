@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+
+{% block title %}{{ cluster_name }} — CNPG UI{% endblock %}
+{% block header_title %}Cluster Detail{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+
+  <!-- Breadcrumb -->
+  <nav class="flex items-center gap-2 text-sm">
+    <a href="/" class="text-slate-500 hover:text-slate-700 transition-colors">Dashboard</a>
+    <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+    </svg>
+    <span class="text-slate-900 font-medium">{{ cluster_name }}</span>
+  </nav>
+
+  {% if error_msg %}
+  <div class="flex items-start gap-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-5 py-4 text-sm">
+    <svg class="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+    </svg>
+    <span>{{ error_msg }}</span>
+  </div>
+  {% endif %}
+
+  {% if cluster %}
+  <div class="grid grid-cols-2 gap-6">
+
+    <!-- Status card -->
+    <div class="card space-y-4">
+      <h2 class="text-base font-semibold text-slate-900 flex items-center gap-2">
+        <svg class="w-4 h-4 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+        </svg>
+        Cluster Status
+      </h2>
+      <dl class="space-y-3">
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-slate-500">Phase</dt>
+          <dd>
+            {% set colour = phase_colour(cluster.phase) %}
+            <span class="badge badge-{{ colour }}">{{ cluster.phase }}</span>
+          </dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-slate-500">Primary Pod</dt>
+          <dd class="font-mono text-xs bg-slate-50 border border-slate-200 px-2 py-1 rounded text-slate-700">{{ cluster.primary or '—' }}</dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-slate-500">Ready Instances</dt>
+          <dd class="text-sm text-slate-900">{{ cluster.ready_instances }} / {{ cluster.instances }}</dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-slate-500">Image</dt>
+          <dd class="font-mono text-xs text-slate-400 max-w-xs truncate">{{ cluster.image or '—' }}</dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="text-sm text-slate-500">Created</dt>
+          <dd class="text-sm text-slate-400">{{ fmt_ts(cluster.created_at) }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- Archiving health card -->
+    <div class="card space-y-4">
+      <h2 class="text-base font-semibold text-slate-900 flex items-center gap-2">
+        <svg class="w-4 h-4 text-brand-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
+        Conditions
+      </h2>
+      {% if cluster.conditions %}
+      <div class="space-y-2">
+        {% for cond in cluster.conditions %}
+        <div class="flex items-start gap-3 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5">
+          {% if cond.status == "True" %}
+          <svg class="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          {% else %}
+          <svg class="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          {% endif %}
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-slate-900">{{ cond.type }}</p>
+            {% if cond.message %}
+            <p class="text-xs text-slate-500 mt-0.5">{{ cond.message }}</p>
+            {% endif %}
+          </div>
+          <span class="ml-auto text-xs {% if cond.status == 'True' %}text-emerald-600{% else %}text-rose-600{% endif %}">
+            {{ cond.status }}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-500">No conditions reported.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Recent backups -->
+  <div class="card !p-0 overflow-hidden">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+      <h2 class="text-base font-semibold text-slate-900">Recent Backups</h2>
+      <div class="flex items-center gap-3">
+        <a href="/backups" class="text-sm text-brand-700 hover:text-brand-800">View all</a>
+      </div>
+    </div>
+    {% if backups %}
+    <table class="w-full">
+      <thead class="bg-slate-50">
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-200">
+        {% for b in backups %}
+        <tr class="hover:bg-slate-50 transition-colors">
+          <td class="font-mono text-xs text-slate-700">{{ b.name }}</td>
+          <td>
+            {% set sc = backup_status_colour(b.status) %}
+            <span class="badge badge-{{ sc }}">{{ b.status }}</span>
+          </td>
+          <td>{{ b.started_at }}</td>
+          <td>{{ b.stopped_at }}</td>
+          <td>{{ b.duration }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="py-12 text-center text-slate-500 text-sm">No backups found for this cluster.</div>
+    {% endif %}
+  </div>
+
+  <!-- Actionable notices — shown above actions so they're impossible to miss -->
+  <div x-data="clusterActions('{{ cluster_name }}')" class="space-y-4">
+
+    {% if needs_post_restore_backup %}
+    <div class="flex items-start gap-4 bg-amber-50 border border-amber-200 rounded-xl px-5 py-4">
+      <svg class="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-amber-900">Post-restore base backup required</p>
+        <p class="text-xs text-amber-800 mt-0.5">
+          This cluster has no base backup since it was created — normal after a restore, but without one the
+          restore page cannot show a new recovery window and future PITR will be limited to pre-restore snapshots.
+          Trigger a backup now (~10–20 min) to establish a recovery point on the current timeline.
+        </p>
+        <button @click="triggerPostRestoreBackup()" :disabled="loading"
+          class="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg
+                 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 transition-colors">
+          <svg x-show="!loading" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+          </svg>
+          <svg x-show="loading" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Trigger Post-Restore Backup
+        </button>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if not cluster.archiving_healthy %}
+    <div class="flex items-start gap-4 bg-rose-50 border border-rose-200 rounded-xl px-5 py-4">
+      <svg class="w-5 h-5 text-rose-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+      </svg>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-rose-900">WAL archiving is not active</p>
+        <p class="text-xs text-rose-800 mt-0.5">
+          This cluster is not pushing WAL segments to S3. This can happen after a restore if the background
+          task that enables archiving was interrupted. Click "Enable Archiving" to patch in the backup config now.
+        </p>
+        <button @click="enableArchiving()" :disabled="loading"
+          class="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg
+                 bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 transition-colors">
+          <svg x-show="!loading" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+          </svg>
+          <svg x-show="loading" x-cloak class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Enable Archiving
+        </button>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Standard actions row -->
+    <div class="flex items-center gap-3 flex-wrap">
+      <button @click="triggerBackup()" :disabled="loading" class="btn-primary">
+        <svg x-show="!loading" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/>
+        </svg>
+        <svg x-show="loading" x-cloak class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        Trigger Backup
+      </button>
+      <a href="/restore" class="btn-ghost">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Go to Restore
+      </a>
+      <div x-show="msg" x-cloak class="ml-3 text-sm" :class="msgType === 'success' ? 'text-emerald-600' : 'text-rose-600'" x-text="msg"></div>
+    </div>
+
+  </div>
+  {% else %}
+  <div class="card text-center py-16">
+    <p class="text-slate-600">Cluster <span class="font-mono text-slate-900">{{ cluster_name }}</span> not found.</p>
+    <a href="/" class="btn-ghost mt-4 inline-flex">Back to Dashboard</a>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function clusterActions(clusterName) {
+  return {
+    loading: false,
+    msg: '',
+    msgType: 'success',
+    async triggerBackup() {
+      const ts = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+      const backupName = clusterName + '-ondemand-' + ts;
+      this.loading = true;
+      this.msg = '';
+      try {
+        const res = await fetch('/api/backups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cluster_name: clusterName, backup_name: backupName }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.msg = 'Backup ' + data.name + ' triggered.';
+        this.msgType = 'success';
+        setTimeout(() => { this.msg = ''; }, 5000);
+      } catch(e) {
+        this.msg = 'Error: ' + e.message;
+        this.msgType = 'error';
+      } finally {
+        this.loading = false;
+      }
+    },
+    async triggerPostRestoreBackup() {
+      this.loading = true;
+      this.msg = '';
+      try {
+        // Use enable-backup with trigger_backup=true so backup config is guaranteed
+        // to be in the cluster spec before CNPG validates the Backup CRD.
+        // Calling /api/backups directly risks "no barmanObjectStore section defined"
+        // if the config patch hasn't been applied yet.
+        const res = await fetch('/api/clusters/' + clusterName + '/enable-backup?trigger_backup=true', {
+          method: 'POST',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        const name = data.backup_triggered || 'unknown';
+        this.msg = 'Backup ' + name + ' triggered — check the Backups page for progress (~10–20 min).';
+        this.msgType = 'success';
+      } catch(e) {
+        this.msg = 'Error: ' + e.message;
+        this.msgType = 'error';
+      } finally {
+        this.loading = false;
+      }
+    },
+    async enableArchiving() {
+      if (!confirm('Patch backup config and WAL archiving into ' + clusterName + '?\n\nThis is safe on a running cluster — it will also force a WAL switch to start archiving immediately.')) return;
+      this.loading = true;
+      this.msg = '';
+      try {
+        const res = await fetch('/api/clusters/' + clusterName + '/enable-backup', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unknown error');
+        this.msg = 'Archiving enabled. WAL position: ' + (data.wal_switched || 'n/a') + '. Reload to see updated conditions.';
+        this.msgType = 'success';
+      } catch(e) {
+        this.msg = 'Error: ' + e.message;
+        this.msgType = 'error';
+      } finally {
+        this.loading = false;
+      }
+    },
+  };
+}
+</script>
+{% endblock %}
