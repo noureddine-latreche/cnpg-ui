@@ -12,21 +12,54 @@ logger = logging.getLogger(__name__)
 _engine = None
 _session_factory = None
 
-DEFAULT_SETTINGS = {
+# Settings that are scoped to a specific CNPG cluster.
+CLUSTER_SETTINGS_KEYS: frozenset[str] = frozenset({
+    "s3_bucket",
+    "s3_env",
+    "backup_schedule",
+    "backup_retention",
+    "storage_class",
+    "storage_size",
+    "wal_storage_size",
+    "app_owner",
+    "app_database",
+    "restore_cluster_name",
+    "aws_credentials_secret",
+})
+
+# Settings that apply globally (not per-cluster).
+GLOBAL_SETTINGS_KEYS: frozenset[str] = frozenset({
+    "namespace",
+    "aws_region",
+    "default_cluster",
+})
+
+DEFAULT_GLOBAL_SETTINGS = {
     "namespace": "default",
     "aws_region": "us-east-1",
+    "default_cluster": "postgres",
+}
+
+DEFAULT_CLUSTER_SETTINGS = {
     "s3_bucket": "",
     "s3_env": "",
-    "default_cluster": "postgres",
     "restore_cluster_name": "postgres-restore",
     "aws_credentials_secret": "aws-credentials",
     "storage_size": "100Gi",
     "wal_storage_size": "20Gi",
+    "storage_class": "",
     "app_owner": "app",
     "app_database": "app",
     "backup_schedule": "0 0 2 * * 0",
     "backup_retention": "30d",
 }
+
+# Keep for backwards compatibility with existing DBs that have flat keys.
+DEFAULT_SETTINGS = {**DEFAULT_GLOBAL_SETTINGS, **DEFAULT_CLUSTER_SETTINGS}
+
+
+def _cluster_key(context: str, cluster_name: str, key: str) -> str:
+    return f"cluster:{context}:{cluster_name}:{key}"
 
 
 class Base(DeclarativeBase):
@@ -104,3 +137,40 @@ async def get_all_settings() -> dict[str, Any]:
         result = await session.execute(select(Settings))
         rows = result.scalars().all()
         return {row.key: row.value for row in rows}
+
+
+async def get_cluster_settings(context: str, cluster_name: str) -> dict[str, str]:
+    """Return per-cluster settings for (context, cluster_name), keys without the prefix."""
+    prefix = f"cluster:{context}:{cluster_name}:"
+    async with get_session_factory()() as session:
+        result = await session.execute(select(Settings))
+        rows = result.scalars().all()
+        return {
+            row.key[len(prefix):]: row.value
+            for row in rows
+            if row.key.startswith(prefix)
+        }
+
+
+async def set_cluster_setting(context: str, cluster_name: str, key: str, value: str) -> None:
+    await set_setting(_cluster_key(context, cluster_name, key), value)
+
+
+async def get_effective_settings(context: str, cluster_name: str) -> dict[str, Any]:
+    """Merge global settings with (context, cluster)-specific overrides.
+
+    Priority: defaults → global flat keys (legacy) → per-(context, cluster) settings.
+    """
+    all_rows = await get_all_settings()
+
+    global_settings = {
+        k: v for k, v in all_rows.items()
+        if not k.startswith("cluster:") and not k.startswith("_")
+    }
+
+    cluster_settings = await get_cluster_settings(context, cluster_name)
+
+    result = {**DEFAULT_CLUSTER_SETTINGS, **DEFAULT_GLOBAL_SETTINGS}
+    result.update(global_settings)
+    result.update(cluster_settings)
+    return result

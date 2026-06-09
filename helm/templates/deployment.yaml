@@ -35,6 +35,12 @@ spec:
               value: {{ .Values.config.defaultCluster | quote }}
             - name: AWS_CREDENTIALS_SECRET
               value: {{ .Values.config.awsCredentialsSecret | quote }}
+            - name: STORAGE_CLASS
+              value: {{ .Values.postgres.storageClass | quote }}
+            - name: NODE_SELECTOR
+              value: {{ .Values.postgres.nodeSelector | toJson | quote }}
+            - name: TOLERATIONS
+              value: {{ .Values.postgres.tolerations | toJson | quote }}
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:

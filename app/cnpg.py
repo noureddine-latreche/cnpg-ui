@@ -157,6 +157,9 @@ class CNPGClient:
     def _cluster_infra(
         storage_size: str = "100Gi",
         wal_storage_size: str = "20Gi",
+        storage_class: str = "",
+        node_selector: dict | None = None,
+        tolerations: list | None = None,
     ) -> dict:
         """Base infrastructure spec for temporary clusters.
 
@@ -164,7 +167,14 @@ class CNPGClient:
         WALs to S3. CNPG rejects cluster startup with 'Expected empty archive'
         if the destination already contains data from a previous restore.
         """
-        return {
+        storage: dict = {"size": storage_size}
+        if storage_class:
+            storage["storageClass"] = storage_class
+        wal_storage: dict = {"size": wal_storage_size}
+        if storage_class:
+            wal_storage["storageClass"] = storage_class
+
+        infra: dict = {
             "instances": 1,
             "imageName": "ghcr.io/cloudnative-pg/postgresql:17.5",
             "imagePullPolicy": "IfNotPresent",
@@ -172,19 +182,23 @@ class CNPGClient:
                 {"name": "AWS_DEFAULT_REGION", "value": settings.AWS_REGION},
                 {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
             ],
-            "storage": {"storageClass": "hcloud-volumes", "size": storage_size},
-            "walStorage": {"storageClass": "hcloud-volumes", "size": wal_storage_size},
+            "storage": storage,
+            "walStorage": wal_storage,
             "resources": {
                 "requests": {"memory": "2Gi", "cpu": "1000m"},
                 "limits": {"cpu": "4000m", "memory": "12Gi"},
             },
-            "affinity": {
-                "nodeSelector": {"workload": "postgres"},
-                "tolerations": [
-                    {"key": "workload", "operator": "Equal", "value": "postgres", "effect": "NoSchedule"}
-                ],
-            },
         }
+
+        if node_selector or tolerations:
+            affinity: dict = {}
+            if node_selector:
+                affinity["nodeSelector"] = node_selector
+            if tolerations:
+                affinity["tolerations"] = tolerations
+            infra["affinity"] = affinity
+
+        return infra
 
     def create_restore_cluster(
         self,
@@ -195,13 +209,16 @@ class CNPGClient:
         restore_name: str = RESTORE_CLUSTER_NAME,
         storage_size: str = "100Gi",
         wal_storage_size: str = "20Gi",
+        storage_class: str = "",
+        node_selector: dict | None = None,
+        tolerations: list | None = None,
     ) -> dict:
         body = {
             "apiVersion": f"{GROUP}/{VERSION}",
             "kind": "Cluster",
             "metadata": {"name": restore_name, "namespace": self.namespace},
             "spec": {
-                **self._cluster_infra(storage_size, wal_storage_size),
+                **self._cluster_infra(storage_size, wal_storage_size, storage_class, node_selector, tolerations),
                 "bootstrap": {
                     "recovery": {
                         "source": "cnpg-backup-source",
@@ -242,6 +259,9 @@ class CNPGClient:
         aws_credentials_secret: str,
         storage_size: str = "100Gi",
         wal_storage_size: str = "20Gi",
+        storage_class: str = "",
+        node_selector: dict | None = None,
+        tolerations: list | None = None,
         app_owner: str = "app",
         app_database: str = "app",
         saved_postgresql_spec: dict | None = None,
@@ -255,7 +275,7 @@ class CNPGClient:
         A background task patches in backup + creates ScheduledBackup once the cluster
         reaches a healthy state.
         """
-        infra = self._cluster_infra(storage_size, wal_storage_size)
+        infra = self._cluster_infra(storage_size, wal_storage_size, storage_class, node_selector, tolerations)
         if image_name:
             infra["imageName"] = image_name
         if saved_resources_spec:

@@ -1,3 +1,4 @@
+import json
 import os
 from dotenv import load_dotenv
 
@@ -14,6 +15,9 @@ class Settings:
     S3_BUCKET: str = os.getenv("S3_BUCKET", "")
     DEFAULT_CLUSTER: str = os.getenv("DEFAULT_CLUSTER", "postgres")
     AWS_CREDENTIALS_SECRET: str = os.getenv("AWS_CREDENTIALS_SECRET", "aws-credentials")
+    STORAGE_CLASS: str = os.getenv("STORAGE_CLASS", "")
+    NODE_SELECTOR: dict = json.loads(os.getenv("NODE_SELECTOR", "{}"))
+    TOLERATIONS: list = json.loads(os.getenv("TOLERATIONS", "[]"))
 
 
 settings = Settings()

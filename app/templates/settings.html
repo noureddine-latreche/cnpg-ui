@@ -6,9 +6,11 @@
 {% block content %}
 <div class="max-w-2xl space-y-8">
 
-  <div>
-    <h1 class="text-xl font-bold text-slate-900">Application Settings</h1>
-    <p class="text-sm text-slate-500 mt-0.5">Configure the connection and default values. Persisted in SQLite.</p>
+  <div class="flex items-start justify-between">
+    <div>
+      <h1 class="text-xl font-bold text-slate-900">Settings</h1>
+      <p class="text-sm text-slate-500 mt-0.5">Global settings apply to all clusters. Cluster settings are scoped to the selected cluster.</p>
+    </div>
   </div>
 
   {% if saved %}
@@ -16,11 +18,39 @@
     <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
     </svg>
-    Settings saved successfully.
+    Settings saved for <strong>{{ editing_cluster }}</strong>.
   </div>
   {% endif %}
 
-  <form action="/settings" method="POST" class="card space-y-6">
+  <!-- Cluster selector -->
+  <div class="card !p-4 flex items-center gap-4">
+    <div class="flex-shrink-0 text-xs text-slate-500">
+      <span class="font-semibold text-slate-700">Context:</span>
+      <span class="font-mono text-brand-700 ml-1">{{ editing_context }}</span>
+    </div>
+    <div class="w-px h-5 bg-slate-200 flex-shrink-0"></div>
+    <span class="text-sm font-semibold text-slate-700 flex-shrink-0">Cluster:</span>
+    <div class="flex items-center gap-2 flex-1">
+      {% for c in clusters %}
+      <a href="/settings?cluster={{ c }}"
+         class="px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors
+                {% if c == editing_cluster %}
+                  bg-brand-600 text-white border-brand-600
+                {% else %}
+                  bg-white text-slate-700 border-slate-200 hover:border-slate-300 hover:bg-slate-50
+                {% endif %}">
+        {{ c }}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <form action="/settings" method="POST" class="space-y-6">
+    <input type="hidden" name="editing_cluster" value="{{ editing_cluster }}" />
+
+    <!-- ── Global settings ───────────────────────────────────────── -->
+    <div class="card space-y-6">
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">Global</h2>
 
     <!-- Namespace -->
     <div>
@@ -47,6 +77,25 @@
       </p>
     </div>
 
+    <!-- Default cluster -->
+    <div>
+      <label for="default_cluster" class="label">Default Cluster Name</label>
+      <input type="text" id="default_cluster" name="default_cluster"
+        value="{{ settings.get('default_cluster', 'postgres') }}"
+        class="input" placeholder="postgres" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        The CNPG cluster name pre-selected in dropdowns across the UI.
+      </p>
+    </div>
+
+    </div><!-- /global card -->
+
+    <!-- ── Per-cluster settings ───────────────────────────────────── -->
+    <div class="card space-y-6">
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+        Cluster — <span class="text-brand-700 font-mono">{{ editing_context }}/{{ editing_cluster }}</span>
+      </h2>
+
     <!-- S3 Bucket -->
     <div>
       <label for="s3_bucket" class="label">S3 Bucket Name</label>
@@ -55,32 +104,18 @@
         class="input" placeholder="my-cnpg-backups" />
       <p class="mt-1.5 text-xs text-slate-500">
         The S3 bucket that holds CNPG WAL archives and base backups.
-        Pre-filled in the Restore page for convenience.
       </p>
     </div>
 
     <!-- S3 Env -->
     <div>
-      <label for="s3_env" class="label">Default S3 Environment / Prefix</label>
+      <label for="s3_env" class="label">S3 Environment / Prefix</label>
       <input type="text" id="s3_env" name="s3_env"
         value="{{ settings.get('s3_env', '') }}"
         class="input" placeholder="prod" />
       <p class="mt-1.5 text-xs text-slate-500">
-        The path segment between the bucket name and <span class="font-mono">/cnpg/</span>
-        (e.g. <span class="font-mono">prod</span>, <span class="font-mono">sandbox</span>).
-        Pre-filled in the Restore page and auto-saved when you run a WAL range check.
-      </p>
-    </div>
-
-    <!-- Default cluster -->
-    <div>
-      <label for="default_cluster" class="label">Default Cluster Name</label>
-      <input type="text" id="default_cluster" name="default_cluster"
-        value="{{ settings.get('default_cluster', 'postgres') }}"
-        class="input" placeholder="postgres" />
-      <p class="mt-1.5 text-xs text-slate-500">
-        The CNPG cluster name that is pre-selected in dropdowns (Backup and Restore pages).
-        Typically matches the Kubernetes object name of your primary cluster.
+        Path segment between the bucket name and <span class="font-mono">/cnpg/</span>
+        (e.g. <span class="font-mono">prod</span>, <span class="font-mono">qa</span>).
       </p>
     </div>
 
@@ -147,6 +182,20 @@
       </div>
     </div>
 
+    <!-- Storage class -->
+    <div>
+      <label for="storage_class" class="label">Storage Class</label>
+      <input type="text" id="storage_class" name="storage_class"
+        value="{{ settings.get('storage_class', '') }}"
+        class="input" placeholder="Leave blank to use the cluster default" />
+      <p class="mt-1.5 text-xs text-slate-500">
+        Kubernetes StorageClass for restore PVCs (data + WAL). Leave blank to use the cluster default.
+        Examples: <span class="font-mono">hcloud-volumes</span>, <span class="font-mono">gp2</span>,
+        <span class="font-mono">standard</span>.
+        Can also be set via the <span class="font-mono">STORAGE_CLASS</span> environment variable at deploy time.
+      </p>
+    </div>
+
     <!-- Backup schedule & retention -->
     <div class="grid grid-cols-2 gap-4">
       <div>
@@ -186,7 +235,9 @@
       </p>
     </div>
 
-    <div class="pt-2 border-t border-slate-200 flex items-center gap-3">
+    </div><!-- /cluster card -->
+
+    <div class="flex items-center gap-3">
       <button type="submit" class="btn-primary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

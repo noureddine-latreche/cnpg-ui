@@ -11,8 +11,14 @@ from fastapi.templating import Jinja2Templates
 from kubernetes.client.exceptions import ApiException
 
 from .config import settings
-from .database import init_db, get_all_settings, get_setting, set_setting
+from .database import (
+    init_db,
+    get_all_settings, get_setting, set_setting,
+    get_cluster_settings, set_cluster_setting, get_effective_settings,
+    CLUSTER_SETTINGS_KEYS,
+)
 from .cnpg import CNPGClient, RESTORE_CLUSTER_NAME
+from .k8s import list_contexts, get_current_context, set_context
 from .s3 import S3Client
 
 logger = logging.getLogger(__name__)
@@ -88,6 +94,28 @@ def _backup_status_colour(status: str) -> str:
 def _get_cnpg(db_settings: dict | None = None, namespace: str | None = None) -> CNPGClient:
     ns = namespace or (db_settings or {}).get("namespace") or settings.NAMESPACE
     return CNPGClient(namespace=ns)
+
+
+async def _settings_for(cluster_name: str | None = None) -> dict:
+    """Return effective settings for a (context, cluster) pair."""
+    global_settings = await get_all_settings()
+    name = cluster_name or global_settings.get("default_cluster", "postgres")
+    context = get_current_context()
+    return await get_effective_settings(context, name)
+
+
+def _affinity_from_settings(db_settings: dict) -> tuple[str, dict | None, list | None]:
+    """Return (storage_class, node_selector, tolerations) for cluster creation.
+
+    storage_class comes from db_settings (user-editable) with fallback to the
+    STORAGE_CLASS env var.  node_selector and tolerations come from env vars only
+    (set via Helm values at deploy time) since they describe cluster topology, not
+    user-level preferences.
+    """
+    storage_class = db_settings.get("storage_class") or settings.STORAGE_CLASS or ""
+    node_selector = settings.NODE_SELECTOR or None
+    tolerations = settings.TOLERATIONS or None
+    return storage_class, node_selector, tolerations
 
 
 def _get_s3(db_settings: dict | None = None) -> S3Client:
@@ -178,12 +206,35 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
+# Kubeconfig context switching
+# ---------------------------------------------------------------------------
+
+@app.get("/api/contexts")
+async def api_list_contexts():
+    return JSONResponse({
+        "contexts": list_contexts(),
+        "current": get_current_context(),
+    })
+
+
+@app.post("/api/contexts/switch")
+async def api_switch_context(request: Request):
+    body = await request.json()
+    name = body.get("context", "").strip()
+    available = list_contexts()
+    if not name or (available and name not in available):
+        return JSONResponse({"error": "Invalid context"}, status_code=400)
+    set_context(name)
+    return JSONResponse({"switched": name})
+
+
+# ---------------------------------------------------------------------------
 # HTML Page routes
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     clusters = []
     error_msg = None
     stats = {"total": 0, "healthy": 0, "archiving_errors": 0}
@@ -220,7 +271,7 @@ async def dashboard(request: Request):
 
 @app.get("/clusters/{name}", response_class=HTMLResponse)
 async def cluster_detail(request: Request, name: str):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for(name)
     cluster_info = None
     backups = []
     error_msg = None
@@ -282,7 +333,7 @@ async def cluster_detail(request: Request, name: str):
 
 @app.get("/backups", response_class=HTMLResponse)
 async def backups_page(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     backups = []
     clusters = []
     error_msg = None
@@ -328,7 +379,7 @@ async def backups_page(request: Request):
 
 @app.get("/restore", response_class=HTMLResponse)
 async def restore_page(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     restore_cluster = None
     clusters = []
     error_msg = None
@@ -362,15 +413,30 @@ async def restore_page(request: Request):
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, saved: str = ""):
-    db_settings = await get_all_settings()
+async def settings_page(request: Request, cluster: str = "", saved: str = ""):
+    global_settings = await get_all_settings()
+    editing_cluster = cluster.strip() or global_settings.get("default_cluster", "postgres")
+
+    clusters: list[str] = []
+    try:
+        cnpg = _get_cnpg(global_settings)
+        clusters = [c.get("metadata", {}).get("name", "") for c in cnpg.list_clusters()]
+    except Exception:
+        pass
+    if editing_cluster not in clusters:
+        clusters = [editing_cluster] + [c for c in clusters if c != editing_cluster]
+
+    effective = await get_effective_settings(get_current_context(), editing_cluster)
     return templates.TemplateResponse(
         "settings.html",
         {
             "request": request,
-            "settings": db_settings,
+            "settings": effective,
+            "editing_cluster": editing_cluster,
+            "editing_context": get_current_context(),
+            "clusters": clusters,
             "saved": saved == "1",
-            "namespace": db_settings.get("namespace", settings.NAMESPACE),
+            "namespace": effective.get("namespace", settings.NAMESPACE),
         },
     )
 
@@ -378,55 +444,83 @@ async def settings_page(request: Request, saved: str = ""):
 @app.post("/settings", response_class=HTMLResponse)
 async def save_settings(
     request: Request,
+    editing_cluster: str = Form("postgres"),
     namespace: str = Form("default"),
     aws_region: str = Form("us-east-1"),
+    default_cluster: str = Form("postgres"),
     s3_bucket: str = Form(""),
     s3_env: str = Form(""),
-    default_cluster: str = Form("postgres"),
     restore_cluster_name: str = Form("postgres-restore"),
     aws_credentials_secret: str = Form("aws-credentials"),
     storage_size: str = Form("100Gi"),
     wal_storage_size: str = Form("20Gi"),
+    storage_class: str = Form(""),
     app_owner: str = Form("app"),
     app_database: str = Form("app"),
     backup_schedule: str = Form("0 0 2 * * 0"),
     backup_retention: str = Form("30d"),
 ):
+    cluster_name = editing_cluster.strip() or default_cluster.strip()
+
+    # Global settings
     await set_setting("namespace", namespace.strip())
     await set_setting("aws_region", aws_region.strip())
-    await set_setting("s3_bucket", s3_bucket.strip())
-    await set_setting("s3_env", s3_env.strip())
     await set_setting("default_cluster", default_cluster.strip())
-    await set_setting("restore_cluster_name", restore_cluster_name.strip())
-    await set_setting("aws_credentials_secret", aws_credentials_secret.strip())
-    await set_setting("storage_size", storage_size.strip())
-    await set_setting("wal_storage_size", wal_storage_size.strip())
-    await set_setting("app_owner", app_owner.strip())
-    await set_setting("app_database", app_database.strip())
-    await set_setting("backup_schedule", backup_schedule.strip())
-    await set_setting("backup_retention", backup_retention.strip())
 
-    # Apply to live cluster if it exists
+    # Per-cluster settings
+    per_cluster = {
+        "s3_bucket": s3_bucket.strip(),
+        "s3_env": s3_env.strip(),
+        "restore_cluster_name": restore_cluster_name.strip(),
+        "aws_credentials_secret": aws_credentials_secret.strip(),
+        "storage_size": storage_size.strip(),
+        "wal_storage_size": wal_storage_size.strip(),
+        "storage_class": storage_class.strip(),
+        "app_owner": app_owner.strip(),
+        "app_database": app_database.strip(),
+        "backup_schedule": backup_schedule.strip(),
+        "backup_retention": backup_retention.strip(),
+    }
+    context = get_current_context()
+    for key, value in per_cluster.items():
+        await set_cluster_setting(context, cluster_name, key, value)
+
+    # Apply schedule/retention to the live cluster if it exists
     try:
         cnpg = _get_cnpg({"namespace": namespace.strip()})
-        cluster_name = default_cluster.strip()
         cnpg.update_backup_schedule(cluster_name, backup_schedule.strip())
         cnpg.update_backup_retention(cluster_name, backup_retention.strip())
     except Exception as e:
         logger.warning("Could not apply backup settings to live cluster: %s", e)
 
-    return RedirectResponse(url="/settings?saved=1", status_code=303)
+    return RedirectResponse(url=f"/settings?cluster={cluster_name}&saved=1", status_code=303)
 
 
 @app.patch("/api/settings")
 async def api_patch_settings(request: Request):
-    """Persist a subset of settings from JS (e.g. s3_bucket + s3_env from restore page)."""
-    _allowed = {"s3_bucket", "s3_env", "default_cluster", "namespace", "aws_region", "aws_credentials_secret"}
+    """Persist a subset of settings from JS (e.g. s3_bucket + s3_env from restore page).
+
+    Pass `cluster` in the body to scope per-cluster keys to a specific cluster.
+    Global keys (namespace, aws_region, default_cluster) are always stored globally.
+    """
+    _global = {"default_cluster", "namespace", "aws_region"}
+    _per_cluster = {"s3_bucket", "s3_env", "aws_credentials_secret"}
     body = await request.json()
+    cluster_name = body.get("cluster", "").strip()
+    if not cluster_name:
+        global_settings = await get_all_settings()
+        cluster_name = global_settings.get("default_cluster", "postgres")
+    saved = []
     for key, value in body.items():
-        if key in _allowed and isinstance(value, str):
+        if not isinstance(value, str) or key == "cluster":
+            continue
+        if key in _global:
             await set_setting(key, value.strip())
-    return JSONResponse({"saved": list(body.keys())})
+            saved.append(key)
+        elif key in _per_cluster:
+            await set_cluster_setting(get_current_context(), cluster_name, key, value.strip())
+            saved.append(key)
+    return JSONResponse({"saved": saved})
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +529,7 @@ async def api_patch_settings(request: Request):
 
 @app.get("/api/clusters")
 async def api_list_clusters():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     try:
         cnpg = _get_cnpg(db_settings)
         raw_clusters = cnpg.list_clusters()
@@ -447,7 +541,7 @@ async def api_list_clusters():
 
 @app.get("/api/clusters/{name}")
 async def api_get_cluster(name: str):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     try:
         cnpg = _get_cnpg(db_settings)
         raw = cnpg.get_cluster(name)
@@ -462,7 +556,7 @@ async def api_get_cluster(name: str):
 
 @app.get("/api/backups")
 async def api_list_backups(cluster: str = Query(default="")):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     try:
         cnpg = _get_cnpg(db_settings)
         raw_backups = cnpg.list_backups(cluster_name=cluster or None)
@@ -488,7 +582,7 @@ async def api_list_backups(cluster: str = Query(default="")):
 
 @app.post("/api/backups")
 async def api_create_backup(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     body = await request.json()
     cluster_name = body.get("cluster_name", "")
     backup_name = body.get("backup_name", "")
@@ -514,7 +608,7 @@ async def api_create_backup(request: Request):
 
 @app.delete("/api/backups/{name}")
 async def api_delete_backup(name: str):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     try:
         cnpg = _get_cnpg(db_settings)
         cnpg.delete_backup(name)
@@ -534,7 +628,7 @@ async def api_restore_preflight(
     env: str = Query(default=""),
 ):
     """Pre-flight check: verify S3 has a base backup and WAL coverage for the target time."""
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     use_bucket = bucket or db_settings.get("s3_bucket", "")
     use_cluster = cluster or db_settings.get("default_cluster", "postgres")
     use_env = env or db_settings.get("s3_env", "")
@@ -565,7 +659,7 @@ async def api_restore_range(
     bucket: str = Query(default=""),
     env: str = Query(default=""),
 ):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     use_bucket = bucket or db_settings.get("s3_bucket", "")
     use_cluster = cluster or db_settings.get("default_cluster", "postgres")
     if not use_bucket or not env:
@@ -610,7 +704,7 @@ async def api_restore_range(
 
 @app.get("/api/restore/status")
 async def api_restore_status():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     restore_name = db_settings.get("restore_cluster_name", RESTORE_CLUSTER_NAME)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -627,7 +721,7 @@ async def api_restore_status():
 
 @app.post("/api/restore")
 async def api_create_restore(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     body = await request.json()
     target_time = body.get("target_time", "")
     source_cluster = body.get("source_cluster", "")
@@ -664,6 +758,7 @@ async def api_create_restore(request: Request):
             except Exception as preflight_err:
                 logger.warning("Pre-flight check failed (non-fatal, proceeding): %s", preflight_err)
 
+        storage_class, node_selector, tolerations = _affinity_from_settings(db_settings)
         cnpg = _get_cnpg(db_settings)
         cnpg.create_restore_cluster(
             target_time=target_time,
@@ -673,6 +768,9 @@ async def api_create_restore(request: Request):
             restore_name=restore_name,
             storage_size=storage_size,
             wal_storage_size=wal_storage_size,
+            storage_class=storage_class,
+            node_selector=node_selector,
+            tolerations=tolerations,
         )
         return JSONResponse({"created": restore_name})
     except ApiException as e:
@@ -684,7 +782,7 @@ async def api_create_restore(request: Request):
 
 @app.get("/api/promote/status")
 async def api_promote_status():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     service_name = original  # app connects to the bare service name, not -rw
     result: dict[str, Any] = {
@@ -730,7 +828,7 @@ async def api_promote_status():
 
 @app.post("/api/promote/hibernate")
 async def api_promote_hibernate():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -744,7 +842,7 @@ async def api_promote_hibernate():
 
 @app.post("/api/promote/unhibernate")
 async def api_promote_unhibernate():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -758,7 +856,7 @@ async def api_promote_unhibernate():
 
 @app.post("/api/promote/switch")
 async def api_promote_switch():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -779,7 +877,7 @@ async def api_promote_switch():
 
 @app.post("/api/promote/unswitch")
 async def api_promote_unswitch():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -798,7 +896,7 @@ async def api_promote_unswitch():
 
 @app.delete("/api/promote/cleanup")
 async def api_promote_cleanup(request: Request):
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     body = await request.json()
     if body.get("confirm") != original:
@@ -833,7 +931,7 @@ async def api_promote_cleanup(request: Request):
 
 @app.get("/api/promote/original-pvcs")
 async def api_get_original_pvcs():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -845,7 +943,7 @@ async def api_get_original_pvcs():
 
 @app.delete("/api/promote/original-pvcs")
 async def api_delete_original_pvcs():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     try:
         cnpg = _get_cnpg(db_settings)
@@ -868,7 +966,7 @@ async def api_promote_finalize():
     this avoids CNPG's 'Expected empty archive' check which fires when backup is
     configured at creation time and the S3 path already has WALs.
     """
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     original = db_settings.get("default_cluster", settings.DEFAULT_CLUSTER)
     restore_name = db_settings.get("restore_cluster_name", RESTORE_CLUSTER_NAME)
     try:
@@ -918,6 +1016,7 @@ async def api_promote_finalize():
             except ValueError:
                 pass
 
+        storage_class, node_selector, tolerations = _affinity_from_settings(db_settings)
         cnpg.create_production_cluster(
             cluster_name=original,
             target_time=target_time,
@@ -926,6 +1025,9 @@ async def api_promote_finalize():
             aws_credentials_secret=aws_credentials_secret,
             storage_size=db_settings.get("storage_size", "100Gi"),
             wal_storage_size=db_settings.get("wal_storage_size", "20Gi"),
+            storage_class=storage_class,
+            node_selector=node_selector,
+            tolerations=tolerations,
             app_owner=app_owner,
             app_database=app_database,
             saved_postgresql_spec=saved_spec.get("postgresql"),
@@ -962,7 +1064,7 @@ async def api_enable_backup(name: str, trigger_backup: bool = False):
     has time to reflect the new spec — without it the backup fails with "no barmanObjectStore
     section defined" even though the patch succeeded.
     """
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for(name)
     s3_bucket = db_settings.get("s3_bucket", "")
     s3_env = db_settings.get("s3_env", "")
     if not s3_bucket or not s3_env:
@@ -1042,7 +1144,7 @@ async def api_enable_backup(name: str, trigger_backup: bool = False):
 
 @app.delete("/api/restore")
 async def api_delete_restore():
-    db_settings = await get_all_settings()
+    db_settings = await _settings_for()
     restore_name = db_settings.get("restore_cluster_name", RESTORE_CLUSTER_NAME)
     try:
         cnpg = _get_cnpg(db_settings)
