@@ -272,8 +272,7 @@ class CNPGClient:
 
         Backup config is intentionally omitted here: CNPG's empty-archive check would
         reject startup because the original cluster's WALs still live at that S3 path.
-        A background task patches in backup + creates ScheduledBackup once the cluster
-        reaches a healthy state.
+        A background task patches in backup config once the cluster reaches a healthy state.
         """
         infra = self._cluster_infra(storage_size, wal_storage_size, storage_class, node_selector, tolerations)
         if image_name:
@@ -494,43 +493,6 @@ class CNPGClient:
         )
         return resp.strip()
 
-    def create_scheduled_backup(
-        self,
-        cluster_name: str,
-        schedule: str = "0 0 2 * * 0",
-    ) -> dict:
-        """Create a weekly ScheduledBackup CRD for the cluster.
-
-        CNPG uses a 6-field cron (seconds minutes hours dom month dow).
-        Default: every Sunday at 02:00:00 UTC.
-        """
-        body = {
-            "apiVersion": f"{GROUP}/{VERSION}",
-            "kind": "ScheduledBackup",
-            "metadata": {
-                "name": f"{cluster_name}-scheduled",
-                "namespace": self.namespace,
-            },
-            "spec": {
-                "schedule": schedule,
-                "backupOwnerReference": "cluster",
-                "cluster": {"name": cluster_name},
-                "method": "barmanObjectStore",
-                "target": "primary",
-            },
-        }
-        try:
-            return self._custom.create_namespaced_custom_object(
-                group=GROUP,
-                version=VERSION,
-                namespace=self.namespace,
-                plural=SCHEDULED_BACKUPS_PLURAL,
-                body=body,
-            )
-        except ApiException as e:
-            logger.error("Error creating scheduled backup for %s: %s", cluster_name, e)
-            raise
-
     def list_cluster_pvcs(self, cluster_name: str) -> list[str]:
         """Return names of all PVCs labelled cnpg.io/cluster=<cluster_name>."""
         result = self._core.list_namespaced_persistent_volume_claim(
@@ -635,14 +597,6 @@ class CNPGClient:
         if resp.status >= 400:
             logger.error("merge-patch %s/%s → %s: %s", plural, name, resp.status, resp.data)
             raise ApiException(status=resp.status, reason=resp.data)
-
-    def update_backup_schedule(self, cluster_name: str, schedule: str) -> None:
-        """Patch the ScheduledBackup cron schedule for a cluster."""
-        self._merge_patch_crd(
-            SCHEDULED_BACKUPS_PLURAL,
-            f"{cluster_name}-scheduled",
-            {"spec": {"schedule": schedule}},
-        )
 
     def update_backup_retention(self, cluster_name: str, retention: str) -> None:
         """Patch the cluster's barman retention policy."""

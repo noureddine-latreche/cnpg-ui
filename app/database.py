@@ -16,8 +16,6 @@ _session_factory = None
 CLUSTER_SETTINGS_KEYS: frozenset[str] = frozenset({
     "s3_bucket",
     "s3_env",
-    "backup_schedule",
-    "backup_retention",
     "storage_class",
     "storage_size",
     "wal_storage_size",
@@ -50,8 +48,6 @@ DEFAULT_CLUSTER_SETTINGS = {
     "storage_class": "",
     "app_owner": "app",
     "app_database": "app",
-    "backup_schedule": "0 0 2 * * 0",
-    "backup_retention": "30d",
 }
 
 # Keep for backwards compatibility with existing DBs that have flat keys.

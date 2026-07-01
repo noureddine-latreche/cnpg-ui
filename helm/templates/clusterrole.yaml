@@ -10,7 +10,6 @@ rules:
     resources:
       - clusters
       - backups
-      - scheduledbackups
     verbs:
       - get
       - list
@@ -19,6 +18,14 @@ rules:
       - update
       - patch
       - delete
+  - apiGroups:
+      - postgresql.cnpg.io
+    resources:
+      - scheduledbackups
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - ""
     resources:

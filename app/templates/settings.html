@@ -196,32 +196,6 @@
       </p>
     </div>
 
-    <!-- Backup schedule & retention -->
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <label for="backup_schedule" class="label">Backup Schedule (cron)</label>
-        <input type="text" id="backup_schedule" name="backup_schedule"
-          value="{{ settings.get('backup_schedule', '0 0 2 * * 0') }}"
-          class="input font-mono" placeholder="0 0 2 * * 0" />
-        <p class="mt-1.5 text-xs text-slate-500">
-          6-field cron used by the CNPG <span class="font-mono">ScheduledBackup</span> CRD
-          (seconds minutes hours dom month dow).
-          Default: every Sunday at 02:00 UTC.
-        </p>
-      </div>
-      <div>
-        <label for="backup_retention" class="label">Retention Policy</label>
-        <input type="text" id="backup_retention" name="backup_retention"
-          value="{{ settings.get('backup_retention', '30d') }}"
-          class="input" placeholder="30d" />
-        <p class="mt-1.5 text-xs text-slate-500">
-          How long CNPG keeps base backups. Examples: <span class="font-mono">7d</span>,
-          <span class="font-mono">14d</span>, <span class="font-mono">30d</span>.
-          Changes take effect on the next backup run — old backups are not deleted immediately.
-        </p>
-      </div>
-    </div>
-
     <!-- AWS Credentials Secret -->
     <div>
       <label for="aws_credentials_secret" class="label">AWS Credentials Secret Name</label>

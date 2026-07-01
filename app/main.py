@@ -166,15 +166,6 @@ async def _add_backup_config_when_ready(cluster_name: str, db_settings: dict) ->
         cnpg._merge_patch_cluster(cluster_name, {"spec": {"backup": backup_spec}})
         logger.info("Backup config patched into %s", cluster_name)
 
-        try:
-            cnpg.create_scheduled_backup(cluster_name)
-            logger.info("ScheduledBackup created for %s", cluster_name)
-        except ApiException as e:
-            if e.status == 409:
-                logger.info("ScheduledBackup for %s already exists", cluster_name)
-            else:
-                logger.warning("Could not create ScheduledBackup for %s: %s", cluster_name, e)
-
         # Trigger an immediate base backup so a recovery point exists on the new
         # timeline right away — without this, the restore page shows no new
         # backups until the next scheduled run (which could be days away).
@@ -457,8 +448,6 @@ async def save_settings(
     storage_class: str = Form(""),
     app_owner: str = Form("app"),
     app_database: str = Form("app"),
-    backup_schedule: str = Form("0 0 2 * * 0"),
-    backup_retention: str = Form("30d"),
 ):
     cluster_name = editing_cluster.strip() or default_cluster.strip()
 
@@ -478,20 +467,10 @@ async def save_settings(
         "storage_class": storage_class.strip(),
         "app_owner": app_owner.strip(),
         "app_database": app_database.strip(),
-        "backup_schedule": backup_schedule.strip(),
-        "backup_retention": backup_retention.strip(),
     }
     context = get_current_context()
     for key, value in per_cluster.items():
         await set_cluster_setting(context, cluster_name, key, value)
-
-    # Apply schedule/retention to the live cluster if it exists
-    try:
-        cnpg = _get_cnpg({"namespace": namespace.strip()})
-        cnpg.update_backup_schedule(cluster_name, backup_schedule.strip())
-        cnpg.update_backup_retention(cluster_name, backup_retention.strip())
-    except Exception as e:
-        logger.warning("Could not apply backup settings to live cluster: %s", e)
 
     return RedirectResponse(url=f"/settings?cluster={cluster_name}&saved=1", status_code=303)
 
@@ -504,7 +483,7 @@ async def api_patch_settings(request: Request):
     Global keys (namespace, aws_region, default_cluster) are always stored globally.
     """
     _global = {"default_cluster", "namespace", "aws_region"}
-    _per_cluster = {"s3_bucket", "s3_env", "aws_credentials_secret"}
+    _per_cluster = {"s3_bucket", "s3_env", "aws_credentials_secret", "storage_size", "wal_storage_size", "storage_class", "app_owner", "app_database", "restore_cluster_name"}
     body = await request.json()
     cluster_name = body.get("cluster", "").strip()
     if not cluster_name:
@@ -1035,7 +1014,7 @@ async def api_promote_finalize():
             image_name=saved_spec.get("imageName"),
         )
 
-        # Patch in backup config + create ScheduledBackup once the cluster is healthy.
+        # Patch in backup config once the cluster is healthy.
         asyncio.create_task(
             _add_backup_config_when_ready(original, dict(db_settings))
         )
@@ -1056,7 +1035,7 @@ async def api_promote_finalize():
 
 @app.post("/api/clusters/{name}/enable-backup")
 async def api_enable_backup(name: str, trigger_backup: bool = False):
-    """Patch the full backup/WAL-archiving spec into a running cluster and (re)create its ScheduledBackup.
+    """Patch the full backup/WAL-archiving spec into a running cluster.
 
     Safe to call on a cluster that already has backup configured — the patch is idempotent.
     When trigger_backup=true, also creates an immediate base backup after patching.  A 5-second
@@ -1074,8 +1053,6 @@ async def api_enable_backup(name: str, trigger_backup: bool = False):
         )
     aws_credentials_secret = db_settings.get("aws_credentials_secret", settings.AWS_CREDENTIALS_SECRET)
     destination_path = f"s3://{s3_bucket}/{s3_env}/cnpg"
-    backup_schedule = db_settings.get("backup_schedule", "0 0 2 * * 0")
-    backup_retention = db_settings.get("backup_retention", "30d")
     try:
         cnpg = _get_cnpg(db_settings)
         raw = cnpg.get_cluster(name)
@@ -1089,20 +1066,10 @@ async def api_enable_backup(name: str, trigger_backup: bool = False):
                 "wal": {"compression": "gzip", "maxParallel": 8},
                 "data": {"compression": "gzip", "immediateCheckpoint": False, "jobs": 8},
             },
-            "retentionPolicy": backup_retention,
+            "retentionPolicy": "30d",
         }
         cnpg._merge_patch_cluster(name, {"spec": {"backup": backup_spec}})
         logger.info("Backup config patched into %s", name)
-
-        try:
-            cnpg.create_scheduled_backup(name, schedule=backup_schedule)
-            scheduled = "created"
-        except ApiException as e:
-            if e.status == 409:
-                cnpg.update_backup_schedule(name, backup_schedule)
-                scheduled = "updated"
-            else:
-                raise
 
         try:
             wal_pos = cnpg.switch_wal(name)
@@ -1131,7 +1098,6 @@ async def api_enable_backup(name: str, trigger_backup: bool = False):
         return JSONResponse({
             "cluster": name,
             "backup_patched": True,
-            "scheduled_backup": scheduled,
             "wal_switched": wal_pos,
             "backup_triggered": backup_triggered,
         })
